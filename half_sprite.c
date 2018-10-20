@@ -61,10 +61,11 @@
 uint8_t buf_origsprite[BUFFER_SIZE];    // This is where we load our original sprite data
 uint8_t buf_mask[BUFFER_SIZE/4];        // Buffer used for creating the mask
 uint8_t buf_shift[BUFFER_SIZE];         // Buffer used to create the shifted sprite (this is the buffer which we'll do most of the work)
+uint16_t output_buf[65536];             // Where the output code will be stored
 
 enum ACTIONS
 {
-    A_NONE,
+    A_DONE,
     A_MOVE,
     A_OR,
     A_AND_OR,
@@ -88,6 +89,75 @@ typedef struct _FREQ
 
 MARK mark_buf[32000];                   // Buffer that flags the actions to be taken in order to draw the sprite
 FREQ freqtab[8000];                     // Frequency table for the values we're going to process
+
+
+
+// Code for qsort obtained from https://code.google.com/p/propgcc/source/browse/lib/stdlib/qsort.c
+// Butchered by ggn as usual
+
+/*
+ * from the libnix library for the Amiga, written by
+ * Matthias Fleischer and Gunther Nikl and placed in the public
+ * domain
+ */
+
+/* This qsort function does a little trick:
+ * To reduce stackspace it iterates the larger interval instead of doing
+ * the recursion on both intervals. 
+ * So stackspace is limited to 32*stack_for_1_iteration = 
+ * 32*4*(4 arguments+1 returnaddress+11 stored registers) = 2048 Bytes,
+ * which is small enough for everybodys use.
+ * (And this is the worst case if you own 4GB and sort an array of chars.)
+ * Sparing the function calling overhead does improve performance, too.
+ */
+
+// Tinkered by GGN to sort FREQ struct members by .count
+
+void qsort(FREQ *base, size_t nmemb)
+{
+    static short size = 4; //will sort longwords only
+    size_t i, a, b, c;
+    while (nmemb > 1)
+    {
+        a = 0;
+        b = nmemb - 1;
+        c = (a + b) / 2; /* Middle element */
+        for (;;)
+        {
+            while ((base[c].count - base[a].count) > 0)
+                a++; /* Look for one >= middle */
+            while ((base[c].count, base[b].count) < 0)
+                b--; /* Look for one <= middle */
+            if (a >= b)
+                break; /* We found no pair */
+            for (i = 0; i < size; i++) /* swap them */
+            {
+                FREQ tmp = base[a + i];
+                base[a + i] = base[b + i];
+                base[b + i] = tmp;
+            }
+            if (c == a) /* Keep track of middle element */
+                c = b;
+            else if (c == b)
+                c = a;
+            a++; /* These two are already sorted */
+            b--;
+        } /* a points to first element of right intervall now (b to last of left) */
+        b++;
+        if (b < nmemb - b) /* do recursion on smaller intervall and iteration on larger one */
+        {
+            qsort(base, b);
+            base = &base[b];
+            nmemb = nmemb - b;
+        }
+        else
+        {
+            qsort(&base[b], nmemb - b);
+            nmemb = b;
+        }
+    }
+}
+
 
 int main(int argc, char ** argv)
 {
@@ -217,6 +287,7 @@ int main(int argc, char ** argv)
 
         // Check if we have 6 or more consecutive word moves.
         // We can then use movem.l
+        MARK *marks_end=marks;// Save end of marks buffer
         marks = (MARK *)mark_buf;
         MARK *temp_mark;
         uint16_t temp_off_first;
@@ -228,8 +299,7 @@ int main(int argc, char ** argv)
                 int num_moves = 1;
                 temp_mark = marks+1;
                 temp_off_first = marks->offset;
-                // TODO: bounds check
-                while (temp_mark->action == A_MOVE)
+                while (temp_mark->action == A_MOVE && temp_mark!=marks_end)
                 {
                     temp_off_second = temp_mark->offset;
                     if (temp_off_second - temp_off_first != 2)
@@ -252,12 +322,14 @@ int main(int argc, char ** argv)
                 {
                     longval = (marks->value_or << 16) | marks[1].value_or;
                     printf("dc.l %i\n", longval);
-                    marks->action = A_NONE;
+                    marks->action = A_DONE;
                     marks++;
-                    marks->action = A_NONE;
+                    marks->action = A_DONE;
                     marks++;
                 }
+                marks--; // Rewind pointer back once because we will skip a mark since we increment the pointer below (right?)
             }
+            marks++;
         }
 
         // Check if we have consecutive moves that did not fall into the movem.l
@@ -273,6 +345,18 @@ int main(int argc, char ** argv)
 
         }
 
+        // Any leftover moves are just going to be move.ws
+        for (i = num_actions - 1; i >= 0; i--)
+        {
+            if (marks->action == A_MOVE)
+            {
+                printf("move.w #%x,%i(a1)\n", marks->value_or, marks->offset);
+                marks->action = A_DONE;
+            }
+            marks++;
+        }
+        
+        
         // Build a "most frequent values" table so we can load things into data registers when possible
         // We could be lazy and just use a huge table which would lead to tons of wasted RAM but let's not do that
         // (I figure this is going to be a tad slow though!)
@@ -282,7 +366,7 @@ int main(int argc, char ** argv)
         for (i = num_actions - 1; i >= 0; i--)
         {
             // Only proceed if we haven't processed the current action yet
-            if (marks->action != A_NONE)
+            if (marks->action != A_DONE)
             {
                 uint16_t value = marks->value_or;
                 int num_iters = 1;      // Run loop twice, one for OR value and one for AND
@@ -316,6 +400,9 @@ int main(int argc, char ** argv)
             }
             marks++;
         }
+
+        // Now, sort the list by frequency
+        qsort(freqtab, num_freqs);
 
         /* TODO: (Leonard's movep trick):
         andi.l #$ff00ff00, (a0); 7
