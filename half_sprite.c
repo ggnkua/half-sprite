@@ -143,7 +143,7 @@ void qsort(FREQ *base, size_t nmemb)
         {
             while ((base[c].count - base[a].count) > 0)
                 a++; /* Look for one >= middle */
-            while ((base[c].count, base[b].count) < 0)
+            while ((base[c].count - base[b].count) < 0)
                 b--; /* Look for one <= middle */
             if (a >= b)
                 break; /* We found no pair */
@@ -192,7 +192,7 @@ int main(int argc, char ** argv)
     int outline_mask = 0;               // Should we outline mask?
     int use_masking = 1;                // Do we actually want to mask the sprites or is it going to be a special case? (for example, 1bpp sprites)
     int horizontal_clip = 1;            // Should we output code that enables horizontal clip for x<0 and x>screen_width-sprite_width? (this can lead to HUGE amounts of outputted code depending on sprite width!)
-    int i, j;
+    int i, j, k;
     
     memcpy(buf_shift, buf_origsprite, BUFFER_SIZE);
     
@@ -402,7 +402,7 @@ int main(int argc, char ** argv)
                     out_potential->base_instruction=0x48c0<<16; // movem.l ea,register_list
                     out_potential->base_instruction|=register_mask;
                     out_potential->ea=0x29;        // d(a1)
-                    out_potential->screen_offset=potential[-1].screen_offset;
+                    out_potential->screen_offset=out_potential[-1].screen_offset;
                     //out_potential->value=
                     out_potential++;
                 }
@@ -458,8 +458,6 @@ int main(int argc, char ** argv)
                 temp_mark = marks;
                 for (j = num_moves - 1; j >= 0; j++)
                 {
-                        uint32_t longval;
-                        longval = (marks->value_or << 16) | marks[1].value_or;
                     printf("movem.w \ndc.w %i\n", marks->value_or);
                     marks->action = A_DONE;
                     marks++;
@@ -472,12 +470,12 @@ int main(int argc, char ** argv)
         
         // Check if any consecutive moves survived the above two passes that could be combined in move.ls
         marks = (MARK *)mark_buf;
-        for (i = num_actions - 1; i >= 0; i--)
+        for (i = num_actions - 1 - 1; i >= 0; i--)
         {
             if (marks->action == A_MOVE)
             {
-                if (marks+1!=marks_end)
-                {
+                //if (marks+1!=marks_end)
+                //{
                     if (marks[1].action==A_MOVE)
                     {
                         uint32_t longval;
@@ -489,12 +487,13 @@ int main(int argc, char ** argv)
                         out_potential->ea=0xa40;                // d(a1)
                         out_potential->screen_offset=marks->offset;
                         out_potential->value=longval;
+                        out_potential++;
                         
                         marks++;
                         marks->action = A_DONE;
                         
                     }
-                }
+                //}
             }
             marks++;
         }
@@ -510,6 +509,7 @@ int main(int argc, char ** argv)
                 out_potential->ea=0xa40;                // d(a1)
                 out_potential->screen_offset=marks->offset;
                 out_potential->value=marks->value_or;
+                out_potential++;
             }
             marks++;
         }
@@ -529,13 +529,15 @@ int main(int argc, char ** argv)
                 uint16_t value = marks->value_or;
                 int num_iters = 1;      // Run loop twice, one for OR value and one for AND
                 if (!generate_mask)
+                {
                     // ...except if we don't generate mask code, in which case run loop only once
                     // (all this stuff should compile to static code so it's not as bloated as you might think with all these ifs and variable for boundaries :))
                     num_iters = 0;
+                }
                 for (j = num_iters; j >= 0; j--)
                 {
                     freqptr = freqtab;
-                    for (i = num_freqs - 1; i >= 0; i--)
+                    for (k = num_freqs; k >= 0; k--)
                     {
                         // Search through the values found so far and increase count of value if found
                         if (freqptr->value == value)
@@ -546,7 +548,7 @@ int main(int argc, char ** argv)
                         freqptr++;
                     }
                     // TODO any way to avoid this check?
-                    if (i == 0)
+                    if (k == 0)
                     {
                         // Not found above, so create a new entry
                         num_freqs++;
@@ -563,16 +565,62 @@ int main(int argc, char ** argv)
         qsort(freqtab, num_freqs);
         
         /* TODO: (Leonard's movep trick):
-        andi.l #$ff00ff00, (a0); 7
-            or .l #$00xx00yy, (a0)+; 7
             andi.l #$ff00ff00, (a0); 7
-            or .l #$00zz00ww, (a0)+; 7 (total 28)
+            or  .l #$00xx00yy, (a0)+; 7
+            andi.l #$ff00ff00, (a0); 7
+            or  .l #$00zz00ww, (a0)+; 7 (total 28)
             
             by:
             
         move.l #$xxyyzzww, dn; 3
             movep.l dn, 1(a0); 6
             addq.w #8, a0; 2 (total 11)*/
+
+        marks = (MARK *)mark_buf;
+        for (i = num_actions - 1 -3; i >= 0; i--)
+        {
+            if (marks->action == A_AND_OR)
+            {
+                //if (marks+1!=marks_end)
+                //{
+                    if (marks[1].action==A_AND_OR &&
+                    marks[2].action==A_AND_OR &&
+                    marks[3].action==A_AND_OR)
+                    {
+                    if (  (marks->value_and==0xff00) &&
+                        (marks[1].value_and==0xff00) &&
+                        (marks[2].value_and==0xff00) &&
+                        (marks[3].value_and==0xff00) &&
+                        (  (marks->value_or&0xff00)==0) &&
+                        ((marks[1].value_or&0xff00)==0) &&
+                        ((marks[2].value_or&0xff00)==0) &&
+                        ((marks[3].value_or&0xff00)==0))                        
+                        {
+                        uint32_t longval;
+                        longval=((marks->value_or<<16)&0xff000000)|((marks[1].value_or<<16)&0x00ff0000)|((marks[2].value_or>>8)&0x0000ff00)|(marks[3].value_or&0x000000ff);
+                        longval = (marks->value_or << 16) | marks[1].value_or;
+                        printf(";movep case - crack out the champage, woohoo!\nmove.l #%i,d0\nmovep.l d0,1(a0)\n", marks->offset, longval);
+                        marks->action = A_DONE;
+                        
+                        out_potential->base_instruction=(0x1c9<<16)|1; // movep.l d0,1(a1)
+                        // out_potential->ea=0xa40;                // d(a1)
+                        out_potential->screen_offset=marks->offset;
+                        out_potential->value=longval;
+                        out_potential++;
+                            
+                        marks++;
+                        marks->action = A_DONE;
+                        marks++;
+                        marks->action = A_DONE;
+                        marks++;
+                        marks->action = A_DONE;
+                    }
+                    }
+                //}
+            }
+            marks++;
+        }
+
         
         // Check if we have 2 consecutive AND/OR pairs
         // We can combine those into and.l/or.l pair
@@ -583,12 +631,12 @@ int main(int argc, char ** argv)
             mark_to_search_for=A_OR;
         }
         marks = (MARK *)mark_buf;
-        for (i = num_actions - 1; i >= 0; i--)
+        for (i = num_actions - 1 - 1; i >= 0; i--)
         {
             if (marks->action == mark_to_search_for)
             {
-                if (marks+1!=marks_end)
-                {
+                //if (marks+1!=marks_end)
+                //{
                     if (marks[1].action==mark_to_search_for)
                     {
                         uint32_t longval;
@@ -603,6 +651,7 @@ int main(int argc, char ** argv)
                             out_potential->ea=0x29;                // d(a1)
                             out_potential->screen_offset=marks->offset;
                             out_potential->value=marks->value_and;
+                            out_potential++;
                         }
                         
                         out_potential->base_instruction=0x80;     // ori.l #xxx,
@@ -615,7 +664,7 @@ int main(int argc, char ** argv)
                         marks->action = A_DONE;
                         
                     }
-                }
+                //}
             }
             marks++;
         }
@@ -639,11 +688,12 @@ int main(int argc, char ** argv)
 
                 if (use_masking)
                 {
-                    // We have to output a and.l
+                    // We have to output an and.l
                     out_potential->base_instruction=0x240; // andi.w #xxx,
                     out_potential->ea=0x29;                // d(a1)
                     out_potential->screen_offset=marks->offset;
                     out_potential->value=marks->value_and;
+                    out_potential++;
                 }
                         
                 out_potential->base_instruction=0x40;     // ori.w #xxx,
@@ -659,7 +709,9 @@ int main(int argc, char ** argv)
         }
         
 
-        // Finally, it's time to output the shifted frame's code and data
+        // Finally, it's time to output the shifted frame's code and data.
+        // Take into account the frequncy table above and use data registers if we can.
+        //
         // TODO: of course we could postpone this step and move this code outside this loop. This way we can use 
         //       a common pool of data for all frames. Probably makes the output code more complex. Hilarity might ensue.
         POTENTIAL_CODE *potential_end=out_potential;
@@ -671,6 +723,7 @@ int main(int argc, char ** argv)
         // Check for consecutive moves or movems and change the generated code to
         // something like <instruction> <data>,(a1)+ instead of <instruction> <data>,xx(a1) 
         {
+            
         }
         
         //
@@ -678,7 +731,7 @@ int main(int argc, char ** argv)
         //
         
         // Shift sprite by one place right
-        // Where's 68000's roxr when you need it, right?
+        // Where's 68000's roxl when you need it, right?
         for (i = BUFFER_SIZE/2; i > 1; i--)
         {
             *buf = ((buf[-4] & 1) << 7) | (*buf >> 1);
