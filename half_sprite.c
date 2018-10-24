@@ -53,6 +53,7 @@
 #include <inttypes.h>
 #include <string.h>
 #include <stdio.h>
+#include <assert.h>
 
 // TODO: For now we're assuming ST Low (320x200x4bpp). We should account for different screen depths and resolutions
 // TODO: Hardcoded tables everywhere! That's not so great!
@@ -178,7 +179,7 @@ void qsort(FREQ *base, size_t nmemb)
     }
 }
 
-void halveit()
+void halve_it()
 {
     // Flags that affect how the routine will behave.
     // Setting these up can affect the compiled routine as a lot of code
@@ -191,7 +192,7 @@ void halveit()
     // that has to be written into a 4bpp backdrop
     int num_mask_planes = 4;            // TODO this does nothing for now!
     int generate_mask = 1;              // Should we auto generate mask or will user supply his/her own?
-    int outline_mask = 0;               // Should we outline mask?
+    int outline_mask = 1;               // Should we outline mask?
     int use_masking = 1;                // Do we actually want to mask the sprites or is it going to be a special case? (for example, 1bpp sprites)
     int horizontal_clip = 1;            // Should we output code that enables horizontal clip for x<0 and x>screen_width-sprite_width? (this can lead to HUGE amounts of outputted code depending on sprite width!)
     int i, j, k;
@@ -205,23 +206,24 @@ void halveit()
         {
             uint16_t *src = (uint16_t *)buf_origsprite;
             uint16_t *mask = (uint16_t *)buf_mask;
-            for (i = 0; i < BUFFER_SIZE / (8 / num_planes) / 2; i++)
+            for (i = 0; i < BUFFER_SIZE / num_planes / 2; i++)
             {
-                *mask++ = *src++ | *src++ | *src++ | *src++;
+                *mask++ = *src | src[1] | src[2] | src[3];
+                src += 4;
             }
             if (outline_mask)
             {
                 // Add outlining of the mask
                 mask = (uint16_t *)buf_mask;
                 uint16_t *mask2 = mask + (screen_width / num_planes / 2);
-                // OR the mask upwards
+                // OR the mask downwards
                 for (i = 0;i < screen_width*(screen_height - 1) / num_planes / 2;i++)
                 {
                     *mask |= *mask2;
                     mask++;
                     mask2++;
                 }
-                // OR the mask downwards
+                // OR the mask upwards
                 mask = (uint16_t *)buf_mask + (screen_width*(screen_height) / num_planes / 2);
                 mask2 = mask - (screen_width / num_planes / 2);
                 for (i = 0;i < screen_width*(screen_height - 1) / num_planes / 2;i++)
@@ -749,18 +751,40 @@ void halveit()
         buf_mask[0] = buf_mask[0] >> 1;
 
     }
-
-    return 0;
 }
+
+typedef struct _endianess
+{
+    union
+    {
+        uint8_t little;
+        uint16_t big;
+    };
+} endianness;
 
 int main(int argc, char ** argv)
 {
+    endianness endian;
+    endian.big = 1;
+
     // Let's say we load a .pi1 file
-    FILE *sprite = fopen("sprite.pi1",'r');
+    FILE *sprite = fopen("sprite.pi1","r");
     assert(sprite);
     fseek(sprite, 32, 0);
-    fread(buf_origsprite, 32000, 1, sprite);
+    fread(buf_origsprite, BUFFER_SIZE, 1, sprite);
     fclose(sprite);
 
-    halveit();
+    // Byteswap the array if little endian
+    if (endian.little)
+    {
+        int i;
+        uint16_t *buf = buf_origsprite;
+        for (i = 0;i < BUFFER_SIZE / 2;i++)
+        {
+            *buf++ = (*buf >> 8) | (*buf << 8);
+        }
+    }
+
+    halve_it();
+    return 0;
 }
