@@ -55,6 +55,9 @@
 #include <stdio.h>
 #include <assert.h>
 
+// Yes, let's define max because it's a complex internal function O_o
+#define max(a,b) ( a > b ? a : b )
+
 // TODO: For now we're assuming ST Low (320x200x4bpp). We should account for different screen depths and resolutions
 // TODO: Hardcoded tables everywhere! That's not so great!
 
@@ -111,8 +114,22 @@ typedef struct _POTENTIAL_CODE
 POTENTIAL_CODE potential[16384];            // What we'll most probably output, bar a few optimisations
 uint16_t sprite_data[16384];                // The sprite data we're going to read when we want to draw the frames
 
+// Instructions opcodes
+#define MOVEM_L_TO_REG (0x4cd8 << 16)
+#define MOVEM_L_FROM_REG (0x48c0 << 16)
+#define MOVEM_W_TO_REG (0x4c98 << 16)
+#define MOVEM_W_FROM_REG (0x48c0 << 16)
+#define MOVEI_L (0x203c)
+#define MOVEI_W (0x303c)
+#define MOVEP_L ((0x1c9 << 16) | 1)
+#define ANDI_L (0x280)
+#define ORI_L (0x80)
+#define ANDI_W (0x240)
+#define ORI_W (0x40)
+#define MOVED_W (0x2000)
+#define ORD_W (0x8140)
+#define ANDD_W (0xc140)
 // Code for qsort obtained from https://code.google.com/p/propgcc/source/browse/lib/stdlib/qsort.c
-// Butchered by ggn as usual
 
 /*
  * from the libnix library for the Amiga, written by
@@ -132,7 +149,7 @@ uint16_t sprite_data[16384];                // The sprite data we're going to re
 
 // Tinkered by GGN to sort FREQ struct members by .count
 
-void qsort(FREQ *base, size_t nmemb)
+static inline void qsort(FREQ *base, size_t nmemb)
 {
     static short size = 4; //will sort longwords only
     size_t a, b, c;
@@ -235,6 +252,7 @@ void halve_it()
                     *mask |= *mask2;
                 }
                 // OR the mask left and right
+                // TODO: this code is currently probably wrong
                 mask = (uint16_t *)buf_mask;
                 *mask = (*mask<<1) | (mask[1] >> 15);
                 mask++;
@@ -389,7 +407,7 @@ void halve_it()
                     // We need to emit 2 pairs of movem.ls: one to read the data from RAM and one to write it back to screen buffer.
                     // Assuming that registers d0-d7 and a2-a6 are free to clobber
                     num_moves = num_moves >> 1;
-                    out_potential->base_instruction = 0x4cd8 << 16; // movem.l (a0)+,register_list
+                    out_potential->base_instruction = MOVEM_L_TO_REG; // movem.l (a0)+,register_list
                     uint16_t register_mask;
                     if (num_moves <= 8)
                     {
@@ -405,7 +423,7 @@ void halve_it()
                     //out_potential->ea = 0x18;             // (a0)+
                     out_potential->screen_offset = 0;       // No screen offset, this is a source read
                     out_potential++;
-                    out_potential->base_instruction = 0x48c0 << 16;     // movem.l register_list,ea
+                    out_potential->base_instruction = MOVEM_L_FROM_REG;     // movem.l register_list,ea
                     out_potential->base_instruction |= register_mask;
                     out_potential->ea = 0x29;               // let's assume it's d(a1) (could be potentially optimised to (a1)+)
                     out_potential++;
@@ -479,7 +497,7 @@ void halve_it()
                     i = i - (num_moves - 1);  // Decrease amount of iterations too
                     // We need to emit 2 pairs of movem.ws: one to read the data from RAM and one to write it back to screen buffer.
                     // Assuming that registers d0-d7 and a2-a6 are free to clobber
-                    out_potential->base_instruction = 0x4c98 << 16; // movem.w (a0)+,register_list
+                    out_potential->base_instruction = MOVEM_W_TO_REG; // movem.w (a0)+,register_list
                     uint16_t register_mask;
                     // TODO: this is probably a redundant check if only 3 to 5 movem.ws are ever used
                     if (num_moves <= 8)
@@ -496,7 +514,7 @@ void halve_it()
                     //out_potential->ea = 0x18;         // (a0)+
                     out_potential->screen_offset = 0;   // No screen offset, this is a source read
                     out_potential++;
-                    out_potential->base_instruction = 0x48c0 << 16;     // movem.l register_list,ea
+                    out_potential->base_instruction = MOVEM_W_FROM_REG;     // movem.l register_list,ea
                     out_potential->base_instruction |= register_mask;
                     out_potential->ea = 0x29;           // let's assume it's d(a1) (could be potentially optimised to (a1)+)
                     out_potential++;
@@ -508,6 +526,7 @@ void halve_it()
 
         // Check if any consecutive moves survived the above two passes that could be combined in move.ls
         cur_mark = mark_buf;
+        int num_movel = 0;
         for (i = num_actions - 1 - 1; i >= 0; i--)
         {
             if (cur_mark->action == A_MOVE)
@@ -521,12 +540,128 @@ void halve_it()
 #ifdef PRINT_DEBUG
                     printf("move.l (a0)+,%i(a1)\ndc.l $%x\n", cur_mark->offset, longval);
 #endif
+                    // TODO: Is there a way we can include these two words into the frequency table without massive amounts of pain?
+                    //       For example, the two words have to be consecutive into the table and on even boundary so they can be loaded
+                    //       in a single register. But, what happens if only one of the two words makes it into top 16 values?
                     cur_mark->action = A_DONE;
 
-                    out_potential->base_instruction = 0x203c; // move.l #xxx,
-                    out_potential->ea = 0xa40;                // d(a1)
+                    out_potential->base_instruction = MOVEI_L;  // move.l #xxx,
+                    out_potential->ea = 0xa40;                  // d(a1)
                     out_potential->screen_offset = cur_mark->offset;
                     out_potential->value = longval;
+                    out_potential++;
+
+                    cur_mark++;
+                    cur_mark->action = A_DONE;
+
+                    num_movel = num_movel + 1;
+
+                    i = i - 1;
+                }
+                //}
+            }
+            cur_mark++;
+        }
+
+        /* (Leonard's movep trick):
+           andi.l #$ff00ff00, (a0); 7
+           or  .l #$00xx00yy, (a0)+; 7
+           andi.l #$ff00ff00, (a0); 7
+           or  .l #$00zz00ww, (a0)+; 7 (total 28)
+           
+           by:
+           
+           move.l #$xxyyzzww, dn; 3
+           movep.l dn, 1(a0); 6
+           addq.w #8, a0; 2 (total 11)*/
+
+        cur_mark = mark_buf;
+        for (i = num_actions - 1 - 3; i >= 0; i--)
+        {
+            if (cur_mark->action == A_AND_OR)
+            {
+                //if (cur_mark+1!=cur_mark_end)
+                //{
+                if (cur_mark[1].action == A_AND_OR &&
+                    cur_mark[2].action == A_AND_OR &&
+                    cur_mark[3].action == A_AND_OR)
+                {
+                    if ((cur_mark->value_and == 0xff00) &&
+                        (cur_mark[1].value_and == 0xff00) &&
+                        (cur_mark[2].value_and == 0xff00) &&
+                        (cur_mark[3].value_and == 0xff00) &&
+                        ((cur_mark->value_or & 0xff00) == 0) &&
+                        ((cur_mark[1].value_or & 0xff00) == 0) &&
+                        ((cur_mark[2].value_or & 0xff00) == 0) &&
+                        ((cur_mark[3].value_or & 0xff00) == 0))
+                    {
+                        uint32_t longval;
+                        longval = ((cur_mark->value_or << 16) & 0xff000000) | ((cur_mark[1].value_or << 16) & 0x00ff0000) | ((cur_mark[2].value_or >> 8) & 0x0000ff00) | (cur_mark[3].value_or & 0x000000ff);
+                        longval = (cur_mark->value_or << 16) | cur_mark[1].value_or;
+#ifdef PRINT_DEBUG
+                        printf(";movep case - crack out the champage, woohoo!\nmove.l #%i,d0\nmovep.l d0,1(a0)\n", cur_mark->offset);
+#endif
+                        cur_mark->action = A_DONE;
+
+                        out_potential->base_instruction = MOVEP_L; // movep.l d0,1(a1)
+                        // out_potential->ea=0xa40;                // d(a1)
+                        out_potential->screen_offset = cur_mark->offset;
+                        out_potential->value = longval;
+                        out_potential++;
+
+                        cur_mark++;
+                        cur_mark->action = A_DONE;
+                        cur_mark++;
+                        cur_mark->action = A_DONE;
+                        cur_mark++;
+                        cur_mark->action = A_DONE;
+
+                        i = i - 3;
+                    }
+                }
+                //}
+            }
+            cur_mark++;
+        }
+
+        // Check if we have 2 consecutive AND/OR pairs
+        // We can combine those into and.l/or.l pair
+        uint16_t mark_to_search_for = A_AND_OR;
+        if (!use_masking)
+        {
+            // We were asked not to gerenarte mask code so we're searching for 2 consecutive ORs
+            mark_to_search_for = A_OR;
+        }
+        cur_mark = mark_buf;
+        for (i = num_actions - 1 - 1; i >= 0; i--)
+        {
+            if (cur_mark->action == mark_to_search_for)
+            {
+                //if (cur_mark+1!=cur_mark_end)
+                //{
+                if (cur_mark[1].action == mark_to_search_for && cur_mark[1].offset-cur_mark->offset==2)
+                {
+                    uint32_t longval;
+                    longval = (cur_mark->value_or << 16) | cur_mark[1].value_or;
+#ifdef PRINT_DEBUG
+                    printf("move.l (a0)+,%i(a1)\ndc.l %i\n", cur_mark->offset, longval);
+#endif
+                    cur_mark->action = A_DONE;
+
+                    if (use_masking)
+                    {
+                        // We have to output a and.l
+                        out_potential->base_instruction = ANDI_L; // andi.l #xxx,
+                        out_potential->ea = 0x29;                // d(a1)
+                        out_potential->screen_offset = cur_mark->offset;
+                        out_potential->value = cur_mark->value_and;
+                        out_potential++;
+                    }
+
+                    out_potential->base_instruction = ORI_L;     // ori.l #xxx,
+                    out_potential->ea = 0x29;                 // d(a1)
+                    out_potential->screen_offset = cur_mark->offset;
+                    out_potential->value = cur_mark->value_or;
                     out_potential++;
 
                     cur_mark++;
@@ -539,7 +674,11 @@ void halve_it()
             cur_mark++;
         }
 
+        // Any actions left from here on are candidates for register caching. Let's mark this.
+        POTENTIAL_CODE *cacheable_code = out_potential;
+
         // Any leftover moves are just going to be move.ws
+        // TODO: Hmmm, since a2-a6 aren't going to be used by and/or then we could use them for move.w
         for (i = num_actions - 1; i >= 0; i--)
         {
             if (cur_mark->action == A_MOVE)
@@ -547,9 +686,10 @@ void halve_it()
 #ifdef PRINT_DEBUG
                 printf("move.w #$%x,%i(a1)\n", cur_mark->value_or, cur_mark->offset);
 #endif
-                cur_mark->action = A_DONE;
-                out_potential->base_instruction = 0x303c; // move.w #xxx,
-                out_potential->ea = 0xa40;                // d(a1)
+                // Let's not mark the actions as done yet, the values could be used in the frequency table
+                //cur_mark->action = A_DONE;
+                out_potential->base_instruction = MOVEI_W;  // move.w #xxx,
+                out_potential->ea = 0xa40;                  // d(a1)
                 out_potential->screen_offset = cur_mark->offset;
                 out_potential->value = cur_mark->value_or;
                 out_potential++;
@@ -557,10 +697,9 @@ void halve_it()
             cur_mark++;
         }
 
-
         // Build a "most frequent values" table so we can load things into data registers when possible
         // We could be lazy and just use a huge table which would lead to tons of wasted RAM but let's not do that
-        // (I figure this is going to be a tad slow though!)
+        // (I figure this implementation is going to be a tad slow though!)
         cur_mark = mark_buf;
         int num_freqs = 0;
         FREQ *freqptr;
@@ -607,118 +746,23 @@ void halve_it()
         // Now, sort the list by frequency
         qsort(freqtab, num_freqs);
 
-        /* TODO: (Leonard's movep trick):
-            andi.l #$ff00ff00, (a0); 7
-            or  .l #$00xx00yy, (a0)+; 7
-            andi.l #$ff00ff00, (a0); 7
-            or  .l #$00zz00ww, (a0)+; 7 (total 28)
-
-            by:
-
-        move.l #$xxyyzzww, dn; 3
-            movep.l dn, 1(a0); 6
-            addq.w #8, a0; 2 (total 11)*/
-
-        cur_mark = mark_buf;
-        for (i = num_actions - 1 - 3; i >= 0; i--)
+        // Write the top 16 values to the sprite data buffer
+        // There's a small chance that there are less than 16 values
+        // TODO: this has to be an even number for the movem!
+        if (num_freqs > 15)
         {
-            if (cur_mark->action == A_AND_OR)
-            {
-                //if (cur_mark+1!=cur_mark_end)
-                //{
-                if (cur_mark[1].action == A_AND_OR &&
-                    cur_mark[2].action == A_AND_OR &&
-                    cur_mark[3].action == A_AND_OR)
-                {
-                    if ((cur_mark->value_and == 0xff00) &&
-                        (cur_mark[1].value_and == 0xff00) &&
-                        (cur_mark[2].value_and == 0xff00) &&
-                        (cur_mark[3].value_and == 0xff00) &&
-                        ((cur_mark->value_or & 0xff00) == 0) &&
-                        ((cur_mark[1].value_or & 0xff00) == 0) &&
-                        ((cur_mark[2].value_or & 0xff00) == 0) &&
-                        ((cur_mark[3].value_or & 0xff00) == 0))
-                    {
-                        uint32_t longval;
-                        longval = ((cur_mark->value_or << 16) & 0xff000000) | ((cur_mark[1].value_or << 16) & 0x00ff0000) | ((cur_mark[2].value_or >> 8) & 0x0000ff00) | (cur_mark[3].value_or & 0x000000ff);
-                        longval = (cur_mark->value_or << 16) | cur_mark[1].value_or;
-#ifdef PRINT_DEBUG
-                        printf(";movep case - crack out the champage, woohoo!\nmove.l #%i,d0\nmovep.l d0,1(a0)\n", cur_mark->offset);
-#endif
-                        cur_mark->action = A_DONE;
-
-                        out_potential->base_instruction = (0x1c9 << 16) | 1; // movep.l d0,1(a1)
-                        // out_potential->ea=0xa40;                // d(a1)
-                        out_potential->screen_offset = cur_mark->offset;
-                        out_potential->value = longval;
-                        out_potential++;
-
-                        cur_mark++;
-                        cur_mark->action = A_DONE;
-                        cur_mark++;
-                        cur_mark->action = A_DONE;
-                        cur_mark++;
-                        cur_mark->action = A_DONE;
-                    }
-                }
-                //}
-            }
-            cur_mark++;
+            num_freqs = 15;
         }
-
-
-        // Check if we have 2 consecutive AND/OR pairs
-        // We can combine those into and.l/or.l pair
-        uint16_t mark_to_search_for = A_AND_OR;
-        if (!use_masking)
+        uint16_t *cached_values = write_sprite_data;
+        for (i = num_freqs; i >= 0; i--)
         {
-            // We were asked not to gerenarte mask code so we're searching for 2 consecutive ORs
-            mark_to_search_for = A_OR;
-        }
-        cur_mark = mark_buf;
-        for (i = num_actions - 1 - 1; i >= 0; i--)
-        {
-            if (cur_mark->action == mark_to_search_for)
-            {
-                //if (cur_mark+1!=cur_mark_end)
-                //{
-                if (cur_mark[1].action == mark_to_search_for && cur_mark[1].offset-cur_mark->offset==2)
-                {
-                    uint32_t longval;
-                    longval = (cur_mark->value_or << 16) | cur_mark[1].value_or;
-#ifdef PRINT_DEBUG
-                    printf("move.l (a0)+,%i(a1)\ndc.l %i\n", cur_mark->offset, longval);
-#endif
-                    cur_mark->action = A_DONE;
-
-                    if (use_masking)
-                    {
-                        // We have to output a and.l
-                        out_potential->base_instruction = 0x280; // andi.l #xxx,
-                        out_potential->ea = 0x29;                // d(a1)
-                        out_potential->screen_offset = cur_mark->offset;
-                        out_potential->value = cur_mark->value_and;
-                        out_potential++;
-                    }
-
-                    out_potential->base_instruction = 0x80;     // ori.l #xxx,
-                    out_potential->ea = 0x29;                 // d(a1)
-                    out_potential->screen_offset = cur_mark->offset;
-                    out_potential->value = cur_mark->value_or;
-
-                    cur_mark++;
-                    cur_mark->action = A_DONE;
-
-                    i = i - 1;
-                }
-                //}
-            }
-            cur_mark++;
+            freqptr--;
+            *write_sprite_data++ = freqptr->value;
         }
 
         // Anything that remained from the above passes we can safely assume that falls under the and.w/or.w case
         mark_to_search_for = A_AND_OR;
-        if (use_masking)
+        if (!use_masking)
         {
             // We were asked not to gerenarte mask code so we're searching for loose ORs
             mark_to_search_for = A_OR;
@@ -731,24 +775,25 @@ void halve_it()
                 uint32_t longval;
                 longval = (cur_mark->value_or << 16) | cur_mark[1].value_or;
 #ifdef PRINT_DEBUG
-                printf("move.w (a0)+,%i(a1)\ndc.l %i\n", cur_mark->offset, longval);
+                printf("and/or.w (a0)+,%i(a1)\ndc.l %i\n", cur_mark->offset, longval);
 #endif
                 cur_mark->action = A_DONE;
 
                 if (use_masking)
                 {
                     // We have to output an and.l
-                    out_potential->base_instruction = 0x240; // andi.w #xxx,
-                    out_potential->ea = 0x29;                // d(a1)
+                    out_potential->base_instruction = ANDI_W;   // andi.w #xxx,
+                    out_potential->ea = 0x29;                   // d(a1)
                     out_potential->screen_offset = cur_mark->offset;
                     out_potential->value = cur_mark->value_and;
                     out_potential++;
                 }
 
-                out_potential->base_instruction = 0x40;     // ori.w #xxx,
-                out_potential->ea = 0x29;                   // d(a1)
+                out_potential->base_instruction = ORI_W;        // ori.w #xxx,
+                out_potential->ea = 0x29;                       // d(a1)
                 out_potential->screen_offset = cur_mark->offset;
                 out_potential->value = cur_mark->value_or;
+                out_potential++;
 
                 cur_mark++;
                 cur_mark->action = A_DONE;
@@ -767,14 +812,76 @@ void halve_it()
         // TODO: of course we could postpone this step and move this code outside this loop. This way we can use 
         //       a common pool of data for all frames. Probably makes the output code more complex. Hilarity might ensue.
         POTENTIAL_CODE *potential_end = out_potential;
-        out_potential = potential;
+        for (out_potential = cacheable_code; out_potential < potential_end; out_potential++)
         {
+            uint16_t cur_value = out_potential->value;
+            for (i = 0; i < num_freqs; i++)
+            {
+                if (cur_value == cached_values[i])
+                {
+                    switch (cur_value)
+                    {
+                    case MOVEI_W:
+                        out_potential->base_instruction = MOVED_W;          // Modify instruction
+                        out_potential->base_instruction |= i >> 1;          // Register field (D0-D7)
+                        break;
+                    case ANDI_W:
+                        out_potential->base_instruction = ORD_W;            // Modify instruction
+                        out_potential->base_instruction |= (i >> 1) << 9;   // Register field (D0-D7)
+                        break;
+                    case ORI_W:
+                        out_potential->base_instruction = ORD_W;            // Modify instruction
+                        out_potential->base_instruction |= (i >> 1) << 9;   // Register field (D0-D7)
+                        break;
 
+                    }
+                    if (i & 1 == 0)
+                    {
+                        // We need to emit SWAP, so place a mark at the upper 16 bits (which are unused)
+                        // TODO: This is JUNK! We'll need to emit a swap before and after the move in order
+                        //       to bring the register back to its original state. We can do better than this!
+                        //       (i.e. keep a SWAP state for all registers)
+                        out_potential->value |= 0x10000;
+                    }
+                }
+            }
         }
 
         // Check for consecutive moves or movems and change the generated code to
-        // something like <instruction> <data>,(a1)+ instead of <instruction> <data>,xx(a1) 
+        // something like <instruction> <data>,(a1)+ instead of <instruction> <data>,xx(a1)
+        // andi.w #xxx,d(An) = 16 cycles
+        // andi.w #xxx,(An)+ = 12 cycles
+        // and.w Dn,d(Am)    = 16 cycles
+        // and.w Dn,(Am)+    = 12 cycles
+        // move.w Dn,(Am)+   = 8 cycles
+        // move.w Dn,d(Am)   = 12 cycles
+        // move.w #xxx,(An)+ = 12 cycles
+        // move.w #xxx,d(An) = 16 cycles
+        // addq.w/l #x,a1    = 8 cycles
+        // lea d(a1),a1      = 8 cycles
+        // adda.w/l #x,a1    = 12/16 cycles
+        // NOTE: OR cycles are identical to AND
+
+        // We have a few strategies to consider here:
+        // If we use a data register then we either do andi.w Dn,d(An) or and.w Dn,(an)+
+        // For the andi case it's pretty straightforward, number of cycles=16*operations.
+        // For the other case we have to consider that we have to do an initial lea d(a1),a1 in order to
+        // bring a1 to the proper address, then start and.w Dn,(a1)+. So the number of cycles here are
+        // 8+12*operations.
+        //       1  2  3  4
+        // andi 16 32 48 64
+        // and  20 32 44 56
+        // Which means we start breaking even after 3 and above consecutive (a1)+.
+        // Hey, it's the movem.l case once again :)
+
+        uint32_t prev_offset = potential->screen_offset;
+        for (out_potential=potential+1;out_potential<potential_end;out_potential++)
         {
+            if (out_potential->screen_offset - prev_offset == 2)
+            {
+
+            }
+            prev_offset = out_potential->screen_offset;
 
         }
 
@@ -822,7 +929,7 @@ int main(int argc, char ** argv)
     fread(buf_origsprite, BUFFER_SIZE, 1, sprite);
     fclose(sprite);
 
-    // Byteswap the array if little endian
+    // Byte swap the array if little endian
     if (endian.little)
     {
         int i;
