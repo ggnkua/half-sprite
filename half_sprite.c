@@ -109,6 +109,7 @@ typedef struct _POTENTIAL_CODE
     uint16_t ea;
     uint32_t screen_offset;
     uint32_t value;
+    uint16_t bytes_affected;
 } POTENTIAL_CODE;
 
 POTENTIAL_CODE potential[16384];            // What we'll most probably output, bar a few optimisations
@@ -422,10 +423,12 @@ void halve_it()
                     out_potential->base_instruction |= register_mask;
                     //out_potential->ea = 0x18;             // (a0)+
                     out_potential->screen_offset = 0;       // No screen offset, this is a source read
+                    out_potential->bytes_affected = 0;      // Source read so we're not doing any destination change
                     out_potential++;
                     out_potential->base_instruction = MOVEM_L_FROM_REG;     // movem.l register_list,ea
                     out_potential->base_instruction |= register_mask;
                     out_potential->ea = 0x29;               // let's assume it's d(a1) (could be potentially optimised to (a1)+)
+                    out_potential->bytes_affected = num_moves * 4;          // 4 bytes per register
                     out_potential++;
 
                 }
@@ -513,10 +516,12 @@ void halve_it()
                     out_potential->base_instruction |= register_mask;
                     //out_potential->ea = 0x18;         // (a0)+
                     out_potential->screen_offset = 0;   // No screen offset, this is a source read
+                    out_potential->bytes_affected = 0;      // Source read so we're not doing any destination change
                     out_potential++;
                     out_potential->base_instruction = MOVEM_W_FROM_REG;     // movem.l register_list,ea
                     out_potential->base_instruction |= register_mask;
                     out_potential->ea = 0x29;           // let's assume it's d(a1) (could be potentially optimised to (a1)+)
+                    out_potential->bytes_affected = num_moves * 2;          // 2 bytes per register
                     out_potential++;
 
                 }
@@ -549,6 +554,7 @@ void halve_it()
                     out_potential->ea = 0xa40;                  // d(a1)
                     out_potential->screen_offset = cur_mark->offset;
                     out_potential->value = longval;
+                    out_potential->bytes_affected = 4;          // One longword please
                     out_potential++;
 
                     cur_mark++;
@@ -607,6 +613,7 @@ void halve_it()
                         // out_potential->ea=0xa40;                // d(a1)
                         out_potential->screen_offset = cur_mark->offset;
                         out_potential->value = longval;
+                        out_potential->bytes_affected = 0;          // movep is a special case, disregard
                         out_potential++;
 
                         cur_mark++;
@@ -650,11 +657,12 @@ void halve_it()
 
                     if (use_masking)
                     {
-                        // We have to output a and.l
+                        // We have to output an and.l
                         out_potential->base_instruction = ANDI_L; // andi.l #xxx,
                         out_potential->ea = 0x29;                // d(a1)
                         out_potential->screen_offset = cur_mark->offset;
                         out_potential->value = cur_mark->value_and;
+                        out_potential->bytes_affected = 4;          // One longword s'il vous plait
                         out_potential++;
                     }
 
@@ -662,6 +670,7 @@ void halve_it()
                     out_potential->ea = 0x29;                 // d(a1)
                     out_potential->screen_offset = cur_mark->offset;
                     out_potential->value = cur_mark->value_or;
+                    out_potential->bytes_affected = 4;          // One longword s'il vous plait
                     out_potential++;
 
                     cur_mark++;
@@ -692,6 +701,7 @@ void halve_it()
                 out_potential->ea = 0xa40;                  // d(a1)
                 out_potential->screen_offset = cur_mark->offset;
                 out_potential->value = cur_mark->value_or;
+                out_potential->bytes_affected = 2;          // Two bytes
                 out_potential++;
             }
             cur_mark++;
@@ -786,6 +796,7 @@ void halve_it()
                     out_potential->ea = 0x29;                   // d(a1)
                     out_potential->screen_offset = cur_mark->offset;
                     out_potential->value = cur_mark->value_and;
+                    out_potential->bytes_affected = 2;          // Two bytes
                     out_potential++;
                 }
 
@@ -793,6 +804,7 @@ void halve_it()
                 out_potential->ea = 0x29;                       // d(a1)
                 out_potential->screen_offset = cur_mark->offset;
                 out_potential->value = cur_mark->value_or;
+                out_potential->bytes_affected = 2;          // Two bytes
                 out_potential++;
 
                 cur_mark++;
@@ -835,7 +847,7 @@ void halve_it()
                         break;
 
                     }
-                    if (i & 1 == 0)
+                    if ((i & 1) == 0)
                     {
                         // We need to emit SWAP, so place a mark at the upper 16 bits (which are unused)
                         // TODO: This is JUNK! We'll need to emit a swap before and after the move in order
@@ -871,18 +883,42 @@ void halve_it()
         //       1  2  3  4
         // andi 16 32 48 64
         // and  20 32 44 56
-        // Which means we start breaking even after 3 and above consecutive (a1)+.
+        // Which means we start breaking even after above 3 consecutive (a1)+.
         // Hey, it's the movem.l case once again :)
 
         uint32_t prev_offset = potential->screen_offset;
-        for (out_potential=potential+1;out_potential<potential_end;out_potential++)
+        uint16_t distance_between_actions = potential->bytes_affected;
+        for (out_potential = potential + 1;out_potential < potential_end;out_potential++)
         {
-            if (out_potential->screen_offset - prev_offset == 2)
+            int consecutive_instructions = 0;
+            if (out_potential->bytes_affected != 0)
             {
-
+                if (out_potential->screen_offset - prev_offset == distance_between_actions)
+                {
+                    consecutive_instructions = consecutive_instructions + 1;
+                }
+                else
+                {
+                    if (consecutive_instructions >= 4)
+                    {
+                        // We have a good post-increment case so let's patch some instructions up
+                        POTENTIAL_CODE *patch_instructions = out_potential - consecutive_instructions + 1;
+                        for (i = consecutive_instructions - 1;i >= 0;i--)
+                        {
+                            //switch (patch_instructions->ea)
+                            //{
+                            //    case 
+                            //}
+                        }
+                    }
+                    else
+                    {
+                        consecutive_instructions = 0;
+                    }
+                }
             }
             prev_offset = out_potential->screen_offset;
-
+            distance_between_actions = out_potential->bytes_affected;
         }
 
         //
