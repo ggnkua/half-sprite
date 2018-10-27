@@ -58,16 +58,32 @@
 // Yes, let's define max because it's a complex internal function O_o
 #define max(a,b) ( a > b ? a : b )
 
-// TODO: For now we're assuming ST Low (320x200x4bpp). We should account for different screen depths and resolutions
-// TODO: Hardcoded tables everywhere! That's not so great!
+// Instructions opcodes
+#define MOVEM_L_TO_REG      (0x4cd8 << 16)
+#define MOVEM_L_FROM_REG    (0x48c0 << 16)
+#define MOVEM_W_TO_REG      (0x4c98 << 16)
+#define MOVEM_W_FROM_REG    (0x4880 << 16)
+#define MOVEI_L             (0x203c)
+#define MOVEI_W             (0x303c)
+#define MOVEP_L             ((0x1c9 << 16) | 1)
+#define ANDI_L              (0x280)
+#define ORI_L               (0x80)
+#define ANDI_W              (0x240)
+#define ORI_W               (0x40)
+#define MOVED_W             (0x2000)
+#define ORD_W               (0x8140)
+#define ANDD_W              (0xc140)
+#define ADDQ_A1             (0x5049)
+#define LEA_D_A1            (0x43e9)
+#define SWAP                (0x4840)
 
-#define BUFFER_SIZE 32000
-#define PRINT_DEBUG
+// Effective address encodings
 
-uint8_t buf_origsprite[BUFFER_SIZE];    // This is where we load our original sprite data
-uint8_t buf_mask[BUFFER_SIZE/4];        // Buffer used for creating the mask
-uint8_t buf_shift[BUFFER_SIZE];         // Buffer used to create the shifted sprite (this is the buffer which we'll do most of the work)
-uint16_t output_buf[65536];             // Where the output code will be stored
+#define EA_A0_POST      0x18
+#define EA_A1_POST      0x19
+#define EA_D_A1         0x29
+#define EA_MOVE_D_A1    0xa40
+#define EA_MOVE_A1_POST 0x640
 
 typedef enum _ACTIONS
 {
@@ -87,6 +103,8 @@ typedef enum _ACTIONS
 
 typedef struct _MARK
 {
+    // The struct we use for the initial scan, this will mark down the
+    // maximum words that need to be changed in order to mask and draw the sprite
     ACTIONS action;
     uint32_t offset;
     uint16_t value_or;
@@ -95,41 +113,38 @@ typedef struct _MARK
 
 typedef struct _FREQ
 {
+    // Just a table that will be used to sort immediate values by frequency
     uint16_t value;
     uint16_t count;
 } FREQ;
 
-MARK mark_buf[32000];                   // Buffer that flags the actions to be taken in order to draw the sprite
-FREQ freqtab[8000];                     // Frequency table for the values we're going to process
-
 // TODO not very satisfied with this - we're taking data from one structure (MARK) and move it to another. Perhaps this struct could be merged with MARK? (Of course then it will slow down the qsort as it'll need to shift more data around)
 typedef struct _POTENTIAL_CODE
 {
-    uint32_t base_instruction;
-    uint16_t ea;
+    // A second struct that marks down the potential instructions to be generated.
+    // The instructions might change along the way so we'll try to keep it flexible
+    uint32_t base_instruction;  // The instruction to be emitted
+    uint16_t ea;                // And its effective address encoding
     uint32_t screen_offset;
     uint32_t value;
-    uint16_t bytes_affected;
+    uint16_t bytes_affected;    // How many bytes the instruction will affect (used for (a1)+ optimisations near the end)
 } POTENTIAL_CODE;
 
-POTENTIAL_CODE potential[16384];            // What we'll most probably output, bar a few optimisations
-uint16_t sprite_data[16384];                // The sprite data we're going to read when we want to draw the frames
+#define BUFFER_SIZE 32000
+#define PRINT_DEBUG
 
-// Instructions opcodes
-#define MOVEM_L_TO_REG (0x4cd8 << 16)
-#define MOVEM_L_FROM_REG (0x48c0 << 16)
-#define MOVEM_W_TO_REG (0x4c98 << 16)
-#define MOVEM_W_FROM_REG (0x48c0 << 16)
-#define MOVEI_L (0x203c)
-#define MOVEI_W (0x303c)
-#define MOVEP_L ((0x1c9 << 16) | 1)
-#define ANDI_L (0x280)
-#define ORI_L (0x80)
-#define ANDI_W (0x240)
-#define ORI_W (0x40)
-#define MOVED_W (0x2000)
-#define ORD_W (0x8140)
-#define ANDD_W (0xc140)
+// TODO: For now we're assuming ST Low (320x200x4bpp). We should account for different screen depths and resolutions
+// TODO: Hardcoded tables everywhere! That's not so great!
+
+uint8_t buf_origsprite[BUFFER_SIZE];    // This is where we load our original sprite data
+uint8_t buf_mask[BUFFER_SIZE / 4];      // Buffer used for creating the mask
+uint8_t buf_shift[BUFFER_SIZE];         // Buffer used to create the shifted sprite (this is the buffer which we'll do most of the work)
+MARK mark_buf[32000];                   // Buffer that flags the actions to be taken in order to draw the sprite
+FREQ freqtab[8000];                     // Frequency table for the values we're going to process
+POTENTIAL_CODE potential[16384];        // What we'll most probably output, bar a few optimisations
+uint16_t output_buf[65536];             // Where the output code will be stored
+uint16_t sprite_data[16384];            // The sprite data we're going to read when we want to draw the frames. Temporary buffer as this data will be stored immediately after the generated code
+
 // Code for qsort obtained from https://code.google.com/p/propgcc/source/browse/lib/stdlib/qsort.c
 
 /*
@@ -152,7 +167,6 @@ uint16_t sprite_data[16384];                // The sprite data we're going to re
 
 static inline void qsort(FREQ *base, size_t nmemb)
 {
-    static short size = 4; //will sort longwords only
     size_t a, b, c;
     while (nmemb > 1)
     {
@@ -213,11 +227,12 @@ void halve_it()
     int generate_mask = 1;              // Should we auto generate mask or will user supply his/her own?
     int outline_mask = 1;               // Should we outline mask?
     int use_masking = 1;                // Do we actually want to mask the sprites or is it going to be a special case? (for example, 1bpp sprites)
-    int horizontal_clip = 1;            // Should we output code that enables horizontal clip for x<0 and x>screen_width-sprite_width? (this can lead to HUGE amounts of outputted code depending on sprite width!)
+    int horizontal_clip = 1;            // TODO Should we output code that enables horizontal clip for x<0 and x>screen_width-sprite_width? (this can lead to HUGE amounts of outputted code depending on sprite width!)
     int i, j, k;
+    uint16_t *write_sprite_data = sprite_data;
+    uint16_t *write_code = output_buf;
 
     memcpy(buf_shift, buf_origsprite, BUFFER_SIZE);
-    uint16_t *write_sprite_data = sprite_data;
 
     // Prepare mask
     if (use_masking)
@@ -275,6 +290,7 @@ void halve_it()
     POTENTIAL_CODE *out_potential = potential;
 
     // Main - repeats 16 times for 16 preshifts
+    // TODO: If we output clipped sprites then we need to shift left and right as many steps as the sprite's width
     for (shift = 0; shift < 16; shift++)
     {
         int off = 0;
@@ -421,14 +437,14 @@ void halve_it()
                         register_mask = 0xff | (((1 << (num_moves - 8)) - 1) << 10);
                     }
                     out_potential->base_instruction |= register_mask;
-                    //out_potential->ea = 0x18;             // (a0)+
+                    //out_potential->ea = EA_A0_POST;             // (a0)+
                     out_potential->screen_offset = 0;       // No screen offset, this is a source read
                     out_potential->bytes_affected = 0;      // Source read so we're not doing any destination change
                     out_potential++;
                     out_potential->base_instruction = MOVEM_L_FROM_REG;     // movem.l register_list,ea
                     out_potential->base_instruction |= register_mask;
-                    out_potential->ea = 0x29;               // let's assume it's d(a1) (could be potentially optimised to (a1)+)
-                    out_potential->bytes_affected = num_moves * 4;          // 4 bytes per register
+                    out_potential->ea = EA_D_A1;               // let's assume it's d(a1) (could be potentially optimised to (a1)+)
+                    out_potential->bytes_affected = 0;          // There's no such thing as movem.l reglist,(An)+, so skip this too
                     out_potential++;
 
                 }
@@ -514,14 +530,14 @@ void halve_it()
                         register_mask = 0xff | (((1 << (num_moves - 8)) - 1) << 10);
                     }
                     out_potential->base_instruction |= register_mask;
-                    //out_potential->ea = 0x18;         // (a0)+
+                    //out_potential->ea = EA_A0_POST;         // (a0)+
                     out_potential->screen_offset = 0;   // No screen offset, this is a source read
                     out_potential->bytes_affected = 0;      // Source read so we're not doing any destination change
                     out_potential++;
-                    out_potential->base_instruction = MOVEM_W_FROM_REG;     // movem.l register_list,ea
+                    out_potential->base_instruction = MOVEM_W_FROM_REG;     // movem.w register_list,ea
                     out_potential->base_instruction |= register_mask;
-                    out_potential->ea = 0x29;           // let's assume it's d(a1) (could be potentially optimised to (a1)+)
-                    out_potential->bytes_affected = num_moves * 2;          // 2 bytes per register
+                    out_potential->ea = EA_D_A1;           // let's assume it's d(a1) (could be potentially optimised to (a1)+)
+                    out_potential->bytes_affected = num_moves * 2;          // There's no such thing as movem.w reglist,(An)+, so skip this too
                     out_potential++;
 
                 }
@@ -551,7 +567,7 @@ void halve_it()
                     cur_mark->action = A_DONE;
 
                     out_potential->base_instruction = MOVEI_L;  // move.l #xxx,
-                    out_potential->ea = 0xa40;                  // d(a1)
+                    out_potential->ea = EA_MOVE_D_A1;                  // d(a1)
                     out_potential->screen_offset = cur_mark->offset;
                     out_potential->value = longval;
                     out_potential->bytes_affected = 4;          // One longword please
@@ -610,7 +626,7 @@ void halve_it()
                         cur_mark->action = A_DONE;
 
                         out_potential->base_instruction = MOVEP_L; // movep.l d0,1(a1)
-                        // out_potential->ea=0xa40;                // d(a1)
+                        // out_potential->ea=EA_MOVE_D_A1;                // d(a1)
                         out_potential->screen_offset = cur_mark->offset;
                         out_potential->value = longval;
                         out_potential->bytes_affected = 0;          // movep is a special case, disregard
@@ -659,7 +675,7 @@ void halve_it()
                     {
                         // We have to output an and.l
                         out_potential->base_instruction = ANDI_L; // andi.l #xxx,
-                        out_potential->ea = 0x29;                // d(a1)
+                        out_potential->ea = EA_D_A1;                // d(a1)
                         out_potential->screen_offset = cur_mark->offset;
                         out_potential->value = cur_mark->value_and;
                         out_potential->bytes_affected = 4;          // One longword s'il vous plait
@@ -667,7 +683,7 @@ void halve_it()
                     }
 
                     out_potential->base_instruction = ORI_L;     // ori.l #xxx,
-                    out_potential->ea = 0x29;                 // d(a1)
+                    out_potential->ea = EA_D_A1;                 // d(a1)
                     out_potential->screen_offset = cur_mark->offset;
                     out_potential->value = cur_mark->value_or;
                     out_potential->bytes_affected = 4;          // One longword s'il vous plait
@@ -698,7 +714,7 @@ void halve_it()
                 // Let's not mark the actions as done yet, the values could be used in the frequency table
                 //cur_mark->action = A_DONE;
                 out_potential->base_instruction = MOVEI_W;  // move.w #xxx,
-                out_potential->ea = 0xa40;                  // d(a1)
+                out_potential->ea = EA_MOVE_D_A1;                  // d(a1)
                 out_potential->screen_offset = cur_mark->offset;
                 out_potential->value = cur_mark->value_or;
                 out_potential->bytes_affected = 2;          // Two bytes
@@ -793,7 +809,7 @@ void halve_it()
                 {
                     // We have to output an and.l
                     out_potential->base_instruction = ANDI_W;   // andi.w #xxx,
-                    out_potential->ea = 0x29;                   // d(a1)
+                    out_potential->ea = EA_D_A1;                   // d(a1)
                     out_potential->screen_offset = cur_mark->offset;
                     out_potential->value = cur_mark->value_and;
                     out_potential->bytes_affected = 2;          // Two bytes
@@ -801,7 +817,7 @@ void halve_it()
                 }
 
                 out_potential->base_instruction = ORI_W;        // ori.w #xxx,
-                out_potential->ea = 0x29;                       // d(a1)
+                out_potential->ea = EA_D_A1;                       // d(a1)
                 out_potential->screen_offset = cur_mark->offset;
                 out_potential->value = cur_mark->value_or;
                 out_potential->bytes_affected = 2;          // Two bytes
@@ -823,6 +839,8 @@ void halve_it()
         //
         // TODO: of course we could postpone this step and move this code outside this loop. This way we can use 
         //       a common pool of data for all frames. Probably makes the output code more complex. Hilarity might ensue.
+        // TODO: could some of the lower frequency values be generated from the registers using simple instructions like
+        //       NOT/NEG etc?
         POTENTIAL_CODE *potential_end = out_potential;
         for (out_potential = cacheable_code; out_potential < potential_end; out_potential++)
         {
@@ -838,7 +856,7 @@ void halve_it()
                         out_potential->base_instruction |= i >> 1;          // Register field (D0-D7)
                         break;
                     case ANDI_W:
-                        out_potential->base_instruction = ORD_W;            // Modify instruction
+                        out_potential->base_instruction = ANDI_W;           // Modify instruction
                         out_potential->base_instruction |= (i >> 1) << 9;   // Register field (D0-D7)
                         break;
                     case ORI_W:
@@ -864,6 +882,7 @@ void halve_it()
         // andi.w #xxx,d(An) = 16 cycles
         // andi.w #xxx,(An)+ = 12 cycles
         // and.w Dn,d(Am)    = 16 cycles
+        // and.w Dn,(Am)     = 12 cycles
         // and.w Dn,(Am)+    = 12 cycles
         // move.w Dn,(Am)+   = 8 cycles
         // move.w Dn,d(Am)   = 12 cycles
@@ -893,36 +912,153 @@ void halve_it()
             int consecutive_instructions = 0;
             if (out_potential->bytes_affected != 0)
             {
-                if (out_potential->screen_offset - prev_offset == distance_between_actions)
+                // If the distance is 0 then there might be something like an and/or pair.
+                // So that also counts as a consecutive instructions
+                if (out_potential->screen_offset - prev_offset == distance_between_actions ||
+                    out_potential->screen_offset - prev_offset == 0)
                 {
+                    // We found one consecutive instruction after the other
                     consecutive_instructions = consecutive_instructions + 1;
                 }
                 else
                 {
+                    // No more consecutive instructions, so let's see how many fish we caught
                     if (consecutive_instructions >= 4)
                     {
                         // We have a good post-increment case so let's patch some instructions up
                         POTENTIAL_CODE *patch_instructions = out_potential - consecutive_instructions + 1;
                         for (i = consecutive_instructions - 1;i >= 0;i--)
                         {
-                            //switch (patch_instructions->ea)
-                            //{
-                            //    case 
-                            //}
+                            switch (patch_instructions->ea)
+                            {
+                            case EA_D_A1:
+                                patch_instructions->ea = EA_A1_POST;
+                                break;
+                            case EA_MOVE_D_A1:
+                                patch_instructions->ea = EA_MOVE_A1_POST;
+                                break;
+                            }
+                            if (i != consecutive_instructions - 1)
+                            {
+                                // Leave the first screen offset intact, wipe the rest.
+                                // This way we'll be able to calculate the lea d(a1),a1 offsets
+                                // by subtracting the first offsets of each (a1)+ block
+                                patch_instructions->screen_offset = 0;
+                            }
                         }
+                        // Let's place a marker in the last instruction to signify
+                        // an extra emission of lea d(A1),a1
+                        patch_instructions[-1].screen_offset = -1;
                     }
-                    else
-                    {
-                        consecutive_instructions = 0;
-                    }
+
+
+                    // Reset our counter and move on
+                    //consecutive_instructions = 0;
                 }
             }
             prev_offset = out_potential->screen_offset;
             distance_between_actions = out_potential->bytes_affected;
         }
 
+        // Finally, emit the damn code!
+        uint16_t screen_offset = 0;
+        uint16_t *lea_patch_address = 0;
+        uint16_t lea_offset;
+        int emit_swap = 0;
+        for (out_potential = potential; out_potential < potential_end; out_potential++)
+        {
+            // Emit a SWAP if required
+            if ((out_potential == MOVED_W || out_potential == ORD_W || out_potential == ANDI_W) && out_potential->value&0x10000)
+            {
+                if (out_potential->base_instruction == MOVED_W)
+                {
+                    *write_code++ = SWAP | (out_potential->base_instruction & 7);
+                }
+                else
+                {
+                    *write_code++ = SWAP | ((out_potential->base_instruction >> 9) & 7);
+                }
+                emit_swap = 1;
+            }
+
+            // Write opcode
+            *write_code++ = out_potential->base_instruction | out_potential->ea;
+
+            // Write immediate values if needed
+            switch (out_potential->base_instruction)
+            {
+            case MOVEM_L_FROM_REG:
+            case MOVEM_W_FROM_REG:
+                // Output screen offset
+                *write_code++ = (uint16_t)out_potential->screen_offset;
+
+            case MOVEI_W:
+            case ANDI_W:
+            case ORI_W:
+                // Output .w immediate value
+                *write_code++ = (uint16_t)out_potential->value;
+                break;
+
+            case MOVEI_L:
+            case ANDI_L:
+            case ORI_L:
+                // Output .l immediate value
+                *write_code++ = (uint16_t)(out_potential->value >> 16);
+                *write_code++ = (uint16_t)(out_potential->value);
+                break;
+            }
+
+            // Write screen offsets if needed
+            assert(out_potential->screen_offset < 0xffff);
+            switch (out_potential->ea)
+            {
+            case EA_D_A1:
+            case EA_MOVE_D_A1:
+                *write_code++ = (uint16_t)out_potential->screen_offset;
+            }
+            
+            // Emit a second SWAP if required
+            if (emit_swap)
+            {
+                if (out_potential->base_instruction == MOVED_W)
+                {
+                    *write_code++ = SWAP | (out_potential->base_instruction & 7);
+                }
+                else
+                {
+                    *write_code++ = SWAP | ((out_potential->base_instruction >> 9) & 7);
+                }
+                emit_swap = 0;
+            }
+
+            // Patch lea offset if this is the first instruction in a (a1)+ block
+            if ((out_potential->ea = EA_MOVE_A1_POST || out_potential->ea == EA_A1_POST) && out_potential->screen_offset != 0 && out_potential->screen_offset != -1)
+            {
+                if (lea_patch_address != 0)
+                {
+                    // Write previous lea offset if there is one
+                    *lea_patch_address = out_potential->screen_offset - lea_offset;
+                }
+            }
+
+            // Emit extra lea if needed
+            if ((out_potential->ea == EA_A1_POST || out_potential->ea == EA_MOVE_A1_POST) && out_potential->ea == -1)
+            {
+                // We are in the last instruction of a (a1)+ instruction block, so we need to output
+                // a lea d(a1),a1 instruction. Trouble is, we don't know d yet, so we'll need to mark down
+                // the address of the offset inside the lea (2nd word) and then come back to it when we have
+                // information about it, i.e. next (a1)+ block
+                *write_code++ = LEA_D_A1;
+                lea_patch_address = write_code;
+                // Punch a hole in the code to allow for the lea offset but don't fill it yet
+                write_code++;
+                lea_offset = out_potential->screen_offset;
+            }
+        }
+
         //
         // Prepare for next frame
+        // TODO: If we want to clip sprites then a lot more shifting needs to happen
         //
 
         // Shift sprite by one place right
@@ -972,7 +1108,8 @@ int main(int argc, char ** argv)
         uint16_t *buf = (uint16_t *)buf_origsprite;
         for (i = 0;i < BUFFER_SIZE / 2;i++)
         {
-            *buf++ = (*buf >> 8) | (*buf << 8);
+            *buf = (*buf >> 8) | (*buf << 8);
+            buf++;
         }
     }
 
