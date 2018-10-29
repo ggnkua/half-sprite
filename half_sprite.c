@@ -217,15 +217,23 @@ void halve_it()
     // Flags that affect how the routine will behave.
     // Setting these up can affect the compiled routine as a lot of code
     // can be excluded.
-    int screen_width = 320;
-    int screen_height = 200;
-    int num_planes = 4;                 // How many planes our sprite is
+    int screen_width = 320;             // Actual screen width in pixels
+    int screen_height = 200;            // Actual screen height in pixels
+    int screen_planes = 4;              // How many planes our screen is
+    // If you set the 2 below values to -1 then extra code for determining the sprite dimensions
+    // will be added, plus extra CPU overhead. Just sayin'.
+    // (also, this will have an impact on every place in the code
+    // where sprite dimensions can be hardcoded by the compiler)
+    int sprite_width = -1;              // Sprite width in pixels. -1=auto detect
+    int sprite_height = -1;             // Sprite height in pixels. -1=auto detect
+    int sprite_planes = 4;              // How many planes our sprite is
     // How many planes we need to mask in order for the sprite to be drawn properly.
-    // This is different from num_planes because for example we might have a 1bpp sprite
+    // This is different from sprite_planes because for example we might have a 1bpp sprite
     // that has to be written into a 4bpp backdrop
-    int num_mask_planes = 4;            // TODO this does nothing for now!
+    int num_mask_planes = 4;
+    int outline_mask = 0;               // Should we outline mask?
+    // TODO: should generate_maks and use_masking be merged into one?
     int generate_mask = 1;              // Should we auto generate mask or will user supply his/her own?
-    int outline_mask = 1;               // Should we outline mask?
     int use_masking = 1;                // Do we actually want to mask the sprites or is it going to be a special case? (for example, 1bpp sprites)
     int horizontal_clip = 1;            // TODO Should we output code that enables horizontal clip for x<0 and x>screen_width-sprite_width? (this can lead to HUGE amounts of outputted code depending on sprite width!)
     int i, j, k;
@@ -234,6 +242,44 @@ void halve_it()
 
     memcpy(buf_shift, buf_origsprite, BUFFER_SIZE);
 
+    // Detect sprite dimensions if requested
+    // (quantised to 16 pixels in width)
+    if (sprite_width == -1 || sprite_height == -1)
+    {
+        int16_t x, y;
+        uint16_t *scan_screen = (uint16_t *)buf_origsprite;
+        // TODO: convert loops to decrement for potential dbra
+        for (y = 0; y < screen_height; y++)
+        {
+            int found_pixel = 0;
+            // TODO: this loop can be faster if we shrink the starting offset.
+            //       For example, if we found a pixel at x=100 then we could start the
+            //       scan from the corresponding word for subsequent scanlines
+            for (x = 0; x < screen_width; x = x + 16)
+            {
+                uint16_t temp_word = 0;
+                for (i = 0; i < screen_planes; i++)
+                {
+                    temp_word = temp_word | *scan_screen;
+                    scan_screen++;
+                }
+                if (temp_word)
+                {
+                    // If we found something then there is one pixel set
+                    // in the current 16 pixel block
+                    sprite_width = max(x + 16, sprite_width);
+                    found_pixel = 1;
+                }
+                scan_screen = scan_screen + (screen_planes - sprite_planes);
+            }
+            if (found_pixel)
+            {
+                // Update screen height
+                sprite_height = max(sprite_height, y);
+            }
+        }
+    }
+
     // Prepare mask
     if (use_masking)
     {
@@ -241,10 +287,24 @@ void halve_it()
         {
             uint16_t *src = (uint16_t *)buf_origsprite;
             uint16_t *mask = (uint16_t *)buf_mask;
-            for (i = 0; i < BUFFER_SIZE / num_planes / 2; i++)
+            uint16_t x, y;
+            // TODO: convert loops to decrement for potential dbra
+            for (y = 0; y < sprite_height; y++)
             {
-                *mask++ = *src | src[1] | src[2] | src[3];
-                src += 4;
+                for (x = 0; x < sprite_width; x=x+16)
+                {
+                    uint16_t gather_planes = 0;
+                    for (j = 0; j < num_mask_planes; j++)
+                    {
+                        // Only gather as many planes as our sprite actually is
+                        gather_planes = gather_planes | *src;
+                        src++;
+                    }
+                    *mask++ = ~gather_planes;
+                    src += screen_planes - num_mask_planes;
+                }
+                mask = mask + ((screen_width - sprite_width) / 16);
+                src = src + (screen_planes*(screen_width - sprite_width) / 16);
             }
             if (outline_mask)
             {
@@ -252,7 +312,7 @@ void halve_it()
                 mask = (uint16_t *)buf_mask;
                 uint16_t *mask2 = mask + (screen_width / 16);
                 // OR the mask upwards
-                for (i = 0; i < screen_width*(screen_height - 1) / (8/num_planes) / 2; i++)
+                for (i = 0; i < screen_width*(screen_height - 1) / (8/sprite_planes) / 2; i++)
                 {
                     *mask |= *mask2;
                     mask++;
@@ -301,7 +361,7 @@ void halve_it()
 
         // Step 1: determine what actions we need to perform
         //         in order to draw the sprite on screen
-
+        uint16_t plane_counter = 0;
         for (i = BUFFER_SIZE / 2 - 1; i >= 0; i--)
         {
             uint16_t val_or = *buf;
@@ -309,8 +369,19 @@ void halve_it()
 
             if (val_or == 0)
             {
+                // Okay, we don't have to OR anything, but perhaps we need to apply the mask
                 if (generate_mask)
                 {
+                    if (val_and && plane_counter < num_mask_planes)
+                    {
+                        // Even if we don't have to OR something, we still have to AND the mask
+                        cur_mark->action = A_AND;
+                        cur_mark->offset = off;
+                        cur_mark->value_or = 0;
+                        cur_mark->value_and = val_and;
+                        cur_mark++;
+                        num_actions++;
+                    }
                     // Nothing to draw here, skip word
                     goto skipword;
                 }
@@ -319,12 +390,16 @@ void halve_it()
                     // Special case where we just need to mask something
                     // because the user supplied their own mask
                     // TODO this could happen if we outlined the mask I guess?
-                    cur_mark->action = A_AND;
-                    cur_mark->offset = off;
-                    cur_mark->value_or = 0;
-                    cur_mark->value_and = val_and;
-                    cur_mark++;
-                    num_actions++;
+                    // TODO decrementing loop pls
+                    for (j = 0; j < num_mask_planes; j++)
+                    {
+                        cur_mark->action = A_AND;
+                        cur_mark->offset = off + j * 2;
+                        cur_mark->value_or = 0;
+                        cur_mark->value_and = val_and;
+                        cur_mark++;
+                        num_actions++;
+                    }
                     goto skipword;
                 }
             }
@@ -368,9 +443,11 @@ void halve_it()
         skipword:
             off = off + 2;
             buf++;
-            if ((i & 3) == 0)
+            plane_counter++;
+            if (plane_counter == screen_planes)
             {
                 mask++;
+                plane_counter = 0;
             }
         }
 
@@ -965,10 +1042,13 @@ void halve_it()
         uint16_t *lea_patch_address = 0;
         uint16_t lea_offset;
         int emit_swap = 0;
+#ifdef PRINT_DEBUG
+        printf("\n\nFinal code:\n");
+#endif
         for (out_potential = potential; out_potential < potential_end; out_potential++)
         {
             // Emit a SWAP if required
-            if ((out_potential == MOVED_W || out_potential == ORD_W || out_potential == ANDI_W) && out_potential->value&0x10000)
+            if ((out_potential->base_instruction == MOVED_W || out_potential->base_instruction == ORD_W || out_potential->base_instruction == ANDI_W) && out_potential->value&0x10000)
             {
                 if (out_potential->base_instruction == MOVED_W)
                 {
@@ -979,24 +1059,57 @@ void halve_it()
                     *write_code++ = SWAP | ((out_potential->base_instruction >> 9) & 7);
                 }
                 emit_swap = 1;
+                #ifdef PRINT_DEBUG
+                    printf("swap D%i\n", out_potential->base_instruction & 7);
+                #endif
             }
 
             // Write opcode
             *write_code++ = out_potential->base_instruction | out_potential->ea;
+#ifdef PRINT_DEBUG
+            switch (out_potential->base_instruction)
+            {
+            case MOVEM_L_FROM_REG:
+                printf("movem.l ");
+                break;
+            case MOVEM_W_FROM_REG:
+                printf("movem.w ");
+                break;
+            case MOVEI_W:
+                printf("move.w ");
+                break;
+            case ANDI_W:
+                printf("andi.w ");
+                break;
+            case ORI_W:
+                printf("ori.w ");
+                break;
+            case MOVEI_L:
+                printf("move.l ");
+                break;
+            case ANDI_L:
+                printf("andi.l ");
+                break;
+            case ORI_L:
+                printf("ori.l ");
+                break;
+            default:
+                printf("wat? $%x",out_potential->base_instruction);
+                break;
+            }
+#endif
 
             // Write immediate values if needed
             switch (out_potential->base_instruction)
             {
-            case MOVEM_L_FROM_REG:
-            case MOVEM_W_FROM_REG:
-                // Output screen offset
-                *write_code++ = (uint16_t)out_potential->screen_offset;
-
             case MOVEI_W:
             case ANDI_W:
             case ORI_W:
                 // Output .w immediate value
                 *write_code++ = (uint16_t)out_potential->value;
+#ifdef PRINT_DEBUG
+                printf("#$%x,", out_potential->value);
+#endif
                 break;
 
             case MOVEI_L:
@@ -1005,6 +1118,12 @@ void halve_it()
                 // Output .l immediate value
                 *write_code++ = (uint16_t)(out_potential->value >> 16);
                 *write_code++ = (uint16_t)(out_potential->value);
+#ifdef PRINT_DEBUG
+                printf("#$%x,", out_potential->value);
+#endif
+                break;
+
+            default:
                 break;
             }
 
@@ -1012,9 +1131,30 @@ void halve_it()
             assert(out_potential->screen_offset < 0xffff);
             switch (out_potential->ea)
             {
+            case MOVEM_L_FROM_REG:
+            case MOVEM_W_FROM_REG:
+                *write_code++ = (uint16_t)out_potential->screen_offset;
+#ifdef PRINT_DEBUG
+                printf("$%x(a1)\n", out_potential->screen_offset);
+#endif
+                break;
+
             case EA_D_A1:
             case EA_MOVE_D_A1:
                 *write_code++ = (uint16_t)out_potential->screen_offset;
+#ifdef PRINT_DEBUG
+                printf("$%x(a1)\n", out_potential->screen_offset);
+#endif
+                break;
+
+#ifdef PRINT_DEBUG
+            case EA_A1_POST:
+            case EA_MOVE_A1_POST:
+                printf("(a1)+\n", out_potential->screen_offset);
+#endif
+
+            default:
+                break;
             }
             
             // Emit a second SWAP if required
@@ -1029,6 +1169,9 @@ void halve_it()
                     *write_code++ = SWAP | ((out_potential->base_instruction >> 9) & 7);
                 }
                 emit_swap = 0;
+#ifdef PRINT_DEBUG
+                printf("swap D%i\n", out_potential->base_instruction & 7);
+#endif
             }
 
             // Patch lea offset if this is the first instruction in a (a1)+ block
@@ -1053,8 +1196,13 @@ void halve_it()
                 // Punch a hole in the code to allow for the lea offset but don't fill it yet
                 write_code++;
                 lea_offset = out_potential->screen_offset;
+#ifdef PRINT_DEBUG
+                printf("lea xxx(a1),a1\n");
+#endif
             }
         }
+
+        // TODO: glue the sprite_data buffer immediately after this
 
         //
         // Prepare for next frame
@@ -1071,7 +1219,7 @@ void halve_it()
         buf_shift[0] = buf_shift[0] >> 1;
 
         // Shift mask by one place right
-        for (i = BUFFER_SIZE / num_planes; i > 1; i--)
+        for (i = BUFFER_SIZE / sprite_planes; i > 1; i--)
         {
             buf_mask[i] = ((buf_mask[i - 1] & 1) << 7) | (buf_mask[i] >> 1);
         }
