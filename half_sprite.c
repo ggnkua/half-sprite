@@ -867,11 +867,30 @@ void halve_it()
         }
         uint16_t *cached_values = write_sprite_data;
         dprintf("Most frequent values\n--------------------\n");
+        // Keep highest frequency values in low words of registers,
+        // since it will probably result in fewer SWAP emissions
+        uint16_t *write_arranged_values = write_sprite_data + 1;
         for (i = num_freqs; i >= 0; i--)
         {
             freqptr--;
-            *write_sprite_data++ = freqptr->value;
-            dprintf("$%04x\n", freqptr->value);
+            *write_arranged_values = freqptr->value;
+            write_arranged_values = write_arranged_values + 2;
+            if (i == 8)
+            {
+                write_arranged_values = write_sprite_data;
+            }
+        }
+        write_sprite_data = write_sprite_data + 16;
+        for (i = 0; i <= num_freqs; i++)
+        {
+            if (i < 8)
+            {
+                dprintf("$%04x <-- d%i hi word\n", cached_values[i * 2], i);
+            }
+            else
+            {
+                dprintf("$%04x <-- d%i lo word\n", cached_values[(i - 8) * 2 + 1], i & 7);
+            }
         }
 
         // Anything that remains from the above passes we can safely assume that falls under the and.w/or.w case
@@ -925,6 +944,7 @@ void halve_it()
 
         dprintf("Data register optimisations\n---------------------------\n");
         POTENTIAL_CODE *potential_end = out_potential;
+        uint16_t swaptable[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };                 // SWAP state of registers
         for (out_potential = cacheable_code; out_potential < potential_end; out_potential++)
         {
             uint16_t cur_value = out_potential->value;
@@ -953,19 +973,42 @@ void halve_it()
                     }
                     if ((i & 1) == 0)
                     {
-                        // We need to emit SWAP, so place a mark at the upper 16 bits (which are unused)
-                        // TODO: This is JUNK! We'll need to emit a swap before and after the move in order
-                        //       to bring the register back to its original state. We can do better than this!
-                        //       (i.e. keep a SWAP state for all registers)
-                        dprintf("have to output swap for the above\n");
-                        out_potential->value |= 0x10000;
+                        // We need the high word of the register
+                        if (swaptable[i >> 1])
+                        {
+                            // The register is already swapped, do nothing
+                        }
+                        else
+                        {
+                            // We need to emit SWAP, so place a mark at the upper 16 bits (which are unused)
+                            dprintf("have to output swap for the above\n");
+                            out_potential->value |= 0x10000;
+                            swaptable[i >> 1] = 0;
+                        }
+
+                    }
+                    else
+                    {
+                        // We need the low word of the register
+                        if (swaptable[i >> 1])
+                        {
+                            // We need to emit SWAP, so place a mark at the upper 16 bits (which are unused)
+                            dprintf("have to output swap for the above\n");
+                            out_potential->value |= 0x10000;
+                            swaptable[i >> 1] = 0;
+                        }
+                        else
+                        {
+                            // The register is already swapped, do nothing
+                        }
+
                     }
                 }
             }
         }
 
-        // Check for consecutive moves or movems and change the generated code to
-        // something like <instruction> <data>,(a1)+ instead of <instruction> <data>,xx(a1)
+        // Check for consecutive move/and/ors and change the generated code to
+        // something like <instruction> <data>,(a1)+ or (a1) instead of <instruction> <data>,xx(a1)
         // andi.w #xxx,d(An) = 16 cycles
         // andi.w #xxx,(An)+ = 12 cycles
         // and.w Dn,d(Am)    = 16 cycles
@@ -996,15 +1039,18 @@ void halve_it()
         uint32_t prev_offset = potential->screen_offset;
         uint16_t distance_between_actions = potential->bytes_affected;
         int consecutive_instructions = 0;
-        for (out_potential = potential + 1;out_potential < potential_end;out_potential++)
+        
+        // NOTE: we're going to scan one entry past the end of the table in order to catch that
+        //       corner case where the last instruction is optimisable
+        for (out_potential = potential + 1; out_potential < (potential_end + 1); out_potential++)
         {
-            if (out_potential->bytes_affected != 0)
+            if (out_potential->bytes_affected != 0 || out_potential == potential_end)
             {
                 // If the distance is 0 then there might be something like an and/or pair.
                 // So that also counts as a consecutive instructions
-                if (out_potential->screen_offset - prev_offset == distance_between_actions ||
-                    out_potential->screen_offset - prev_offset == 0 ||
-                    out_potential!=potential_end /*guard against final instruction */)
+                if ((out_potential->screen_offset - prev_offset == distance_between_actions ||
+                    out_potential->screen_offset - prev_offset == 0) &&
+                    out_potential != potential_end /* guard against final instruction */ )
                 {
                     // We found one consecutive instruction after the other
                     consecutive_instructions = consecutive_instructions + 1;
@@ -1016,7 +1062,8 @@ void halve_it()
                     {
                         // We have a good post-increment case so let's patch some instructions up
                         POTENTIAL_CODE *patch_instructions = out_potential - consecutive_instructions - 1;
-                        for (i = consecutive_instructions - 1;i >= 0;i--)
+                        patch_instructions->bytes_affected = -1;        // Signal lea emission at the start of the block
+                        for (i = consecutive_instructions - 1; i >= 0; i--)
                         {
                             switch (patch_instructions->ea)
                             {
@@ -1045,13 +1092,13 @@ void halve_it()
                                 }
                                 break;
                             }
-                            if (i != consecutive_instructions - 1)
-                            {
-                                // Leave the first screen offset intact, wipe the rest.
-                                // This way we'll be able to calculate the lea d(a1),a1 offsets
-                                // by subtracting the first offsets of each (a1)+ block
-                                patch_instructions->screen_offset = 0;
-                            }
+                            //if (i != consecutive_instructions - 1)
+                            //{
+                            //    // Leave the first screen offset intact, wipe the rest.
+                            //    // This way we'll be able to calculate the lea d(a1),a1 offsets
+                            //    // by subtracting the first offsets of each (a1)+ block
+                            //    patch_instructions->screen_offset = 0;
+                            //}
                             patch_instructions++;
                         }
                         // Final instruction will be a (a1), i.e. no post increment
@@ -1066,10 +1113,7 @@ void halve_it()
                             dprintf("move.w <ea>,$%04x(a1) -> (a1)\n", patch_instructions->screen_offset);
                             break;
                         }
-
-                        // Let's place a marker in the last instruction to signify
-                        // an extra emission of lea d(A1),a1
-                        patch_instructions->screen_offset = -1;
+                        patch_instructions->bytes_affected = -2;    // Signal updating of lea counter
                     }
 
                     // Reset our counter and move on
@@ -1082,15 +1126,15 @@ void halve_it()
 
         // Finally, emit the damn code!
 
-        uint16_t screen_offset = 0;
+        //uint16_t screen_offset = 0;
         uint16_t *lea_patch_address = 0;
-        uint16_t lea_offset;
+        uint16_t lea_offset = 0;
         int emit_swap = 0;
         dprintf("\n\nFinal code:\n-----------\n");
         for (out_potential = potential; out_potential < potential_end; out_potential++)
         {
             // Emit a SWAP if required
-            if (((out_potential->base_instruction & 0xffc0) == MOVED_W || (out_potential->base_instruction & 0xf1ff) == ORD_W || (out_potential->base_instruction & 0xf1ff) == ANDI_W) && out_potential->value&0x10000)
+            if (((out_potential->base_instruction & 0xffc0) == MOVED_W || (out_potential->base_instruction & 0xf1ff) == ORD_W || (out_potential->base_instruction & 0xf1ff) == ANDI_W) && out_potential->value & 0x10000)
             {
                 if (out_potential->base_instruction == MOVED_W)
                 {
@@ -1102,6 +1146,27 @@ void halve_it()
                 }
                 emit_swap = 1;
                 dprintf("swap D%i\n", out_potential->base_instruction & 7);
+            }
+
+            // Emit extra lea if needed - last instruction in a (a1)+/(a1) block should be (a1)
+            if (out_potential->bytes_affected == -1)
+            {
+                // We are in the first instruction of a (a1)+/(a1) instruction block, so we need to output
+                // a lea d(a1),a1 instruction. We calculate d relative to previous value of a1, which at
+                // the start of the code is at the top left corner of the sprite.
+                *write_code++ = LEA_D_A1;
+                //lea_patch_address = write_code;
+                // Punch a hole in the code to allow for the lea offset but don't fill it yet
+                *write_code++ = out_potential->screen_offset - lea_offset;
+                lea_offset = out_potential->screen_offset - lea_offset;
+                dprintf("lea %i(a1),a1\n", lea_offset);
+            }
+
+            // Update lea counter at the end of the (a1)+/(a1) block
+            if (out_potential->bytes_affected == -2)
+            {
+                lea_offset = out_potential->screen_offset;
+                dprintf("lea %i(a1),a1\n", lea_offset);
             }
 
             // Write opcode
@@ -1202,25 +1267,9 @@ void halve_it()
                 break;
             }
 
-            //assert(out_potential->screen_offset < 0xffff);
             if (out_potential->ea == EA_A1 || out_potential->ea == EA_MOVE_A1)
             {
                 dprintf("(a1)\n");
-            }
-
-            // Emit a second SWAP if required
-            if (emit_swap)
-            {
-                if (out_potential->base_instruction == MOVED_W)
-                {
-                    *write_code++ = SWAP | (out_potential->base_instruction & 7);
-                }
-                else
-                {
-                    *write_code++ = SWAP | ((out_potential->base_instruction >> 9) & 7);
-                }
-                emit_swap = 0;
-                dprintf("swap D%i\n", out_potential->base_instruction & 7);
             }
 
             // Patch lea offset if this is the first instruction in a (a1)+/(a1) block
@@ -1235,21 +1284,6 @@ void halve_it()
                 }
             }
 
-            // Emit extra lea if needed - last instruction in a (a1)+/(a1) block should be (a1)
-            //if ((out_potential->ea == EA_A1 || out_potential->ea == EA_MOVE_A1) && out_potential->ea == -1)
-            if (out_potential->screen_offset == -1)
-            {
-                // We are in the last instruction of a (a1)+ instruction block, so we need to output
-                // a lea d(a1),a1 instruction. Trouble is, we don't know d yet, so we'll need to mark down
-                // the address of the offset inside the lea (2nd word) and then come back to it when we have
-                // information about it, i.e. next (a1)+ block
-                *write_code++ = LEA_D_A1;
-                lea_patch_address = write_code;
-                // Punch a hole in the code to allow for the lea offset but don't fill it yet
-                write_code++;
-                lea_offset = out_potential->screen_offset;
-                dprintf("lea xxx(a1),a1\n");
-            }
         }
 
         // TODO: glue the sprite_data buffer immediately after this
