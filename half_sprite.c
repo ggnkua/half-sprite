@@ -46,7 +46,7 @@
 // - Excellence in Art
 // - dml
 // - SPKR
-// - Lord knows what else
+// - Lord knows who/what else
 
 // Started 19 Octomber 2018 20:30
 
@@ -83,6 +83,7 @@
 #define ADDQ_A1             (0x5049)
 #define LEA_D_A1            (0x43e9)
 #define SWAP                (0x4840)
+#define LEA_PC_A0           (0x41fa)
 
 // Effective address encodings
 
@@ -221,26 +222,26 @@ void halve_it()
     // Flags that affect how the routine will behave.
     // Setting these up can affect the compiled routine as a lot of code
     // can be excluded.
-    int screen_width = 320;             // Actual screen width in pixels
-    int screen_height = 200;            // Actual screen height in pixels
-    int screen_planes = 4;              // How many planes our screen is
+    short screen_width = 320;             // Actual screen width in pixels
+    short screen_height = 200;            // Actual screen height in pixels
+    short screen_planes = 4;              // How many planes our screen is
     // If you set the 2 below values to -1 then extra code for determining the sprite dimensions
     // will be added, plus extra CPU overhead. Just sayin'.
     // (also, this will have an impact on every place in the code
     // where sprite dimensions can be hardcoded by the compiler)
-    int sprite_width = -1;              // Sprite width in pixels. -1=auto detect
-    int sprite_height = -1;             // Sprite height in pixels. -1=auto detect
-    int sprite_planes = 4;              // How many planes our sprite is
+    short sprite_width = -1;              // Sprite width in pixels. -1=auto detect
+    short sprite_height = -1;             // Sprite height in pixels. -1=auto detect
+    short sprite_planes = 4;              // How many planes our sprite is
     // How many planes we need to mask in order for the sprite to be drawn properly.
     // This is different from sprite_planes because for example we might have a 1bpp sprite
     // that has to be written into a 4bpp backdrop
-    int num_mask_planes = 4;
+    short num_mask_planes = 4;
     int outline_mask = 0;               // Should we outline mask?
-    // 
     int generate_mask = 1;              // Should we auto generate mask or will user supply his/her own?
     int use_masking = 1;                // Do we actually want to mask the sprites or is it going to be a special case? (for example, 1bpp sprites)
-    int horizontal_clip = 1;            // TODO Should we output code that enables horizontal clip for x<0 and x>screen_width-sprite_width? (this can lead to HUGE amounts of outputted code depending on sprite width!)
-    int i, j, k;
+    int horizontal_clip = 1;            // Should we output code that enables horizontal clip for x<0 and x>screen_width-sprite_width? (this can lead to HUGE amounts of outputted code depending on sprite width!)
+    short i, j, k;
+    short loop_count;
     uint16_t *write_sprite_data = sprite_data;
     uint16_t *write_code = output_buf;
 
@@ -250,10 +251,11 @@ void halve_it()
     // (quantised to 16 pixels in width)
     if (sprite_width == -1 || sprite_height == -1)
     {
-        int16_t x, y;
+        short x, y;
         uint16_t *scan_screen = (uint16_t *)buf_origsprite;
-        // TODO: convert loops to decrement for potential dbra
-        for (y = 0; y < screen_height; y++)
+        loop_count = screen_height - 1;
+        y = 0;
+        do
         {
             int found_pixel = 0;
             // TODO: this loop can be faster if we shrink the starting offset.
@@ -281,9 +283,10 @@ void halve_it()
                 // Update screen height
                 sprite_height = max(sprite_height, y);
             }
-        }
+            y++;
+        } while (--loop_count != -1);
     }
-    // Incremebt width and height since our scanning is 0 based
+    // Increment width and height since our scanning is 0 based
     sprite_height++;
     sprite_width = sprite_width + 16;
 
@@ -295,7 +298,6 @@ void halve_it()
             uint16_t *src = (uint16_t *)buf_origsprite;
             uint16_t *mask = (uint16_t *)buf_mask;
             uint16_t x, y;
-            // TODO: convert loops to decrement for potential dbra
             for (y = 0; y < sprite_height; y++)
             {
                 for (x = 0; x < sprite_width; x=x+16)
@@ -365,6 +367,7 @@ void halve_it()
         MARK *cur_mark = mark_buf;
         uint16_t *buf = (uint16_t *)buf_shift;
         uint16_t *mask = (uint16_t *)buf_mask;
+        uint16_t val_and = *mask;
 
         // Step 1: determine what actions we need to perform
         //         in order to draw the sprite on screen
@@ -372,7 +375,6 @@ void halve_it()
         for (i = BUFFER_SIZE / 2 - 1; i >= 0; i--)
         {
             uint16_t val_or = *buf;
-            uint16_t val_and = *mask;   // TODO: can be optimised as one read per 4 src words
 
             if (val_or == 0)
             {
@@ -397,7 +399,6 @@ void halve_it()
                     // Special case where we just need to mask something
                     // because the user supplied their own mask
                     // TODO this could happen if we outlined the mask I guess?
-                    // TODO decrementing loop pls
                     for (j = 0; j < num_mask_planes; j++)
                     {
                         cur_mark->action = A_AND;
@@ -455,6 +456,7 @@ void halve_it()
             if (plane_counter == screen_planes)
             {
                 mask++;
+                val_and = *mask;
                 plane_counter = 0;
             }
         }
@@ -638,16 +640,15 @@ void halve_it()
         {
             if (cur_mark->action == A_MOVE)
             {
-                //if (cur_mark+1!=cur_mark_end)
-                //{
                 if (cur_mark[1].action == A_MOVE && cur_mark[1].offset-cur_mark->offset==2)
                 {
                     uint32_t longval;
                     longval = (cur_mark->value_or << 16) | cur_mark[1].value_or;
                     dprintf("move.l (a0)+,%i(a1) - dc.l $%04x\n", cur_mark->offset, longval);
-                    // TODO: Is there a way we can include these two words into the frequency table without massive amounts of pain?
+                    // TODO: Is there a way we can include a longword into the frequency table without massive amounts of pain?
                     //       For example, the two words have to be consecutive into the table and on even boundary so they can be loaded
                     //       in a single register. But, what happens if only one of the two words makes it into top 16 values?
+                    // TODO: We could use a2-a6 for this purpose and have a separate sorting phase for longwords
                     cur_mark->action = A_DONE;
 
                     out_potential->base_instruction = MOVEI_L;  // move.l #xxx,
@@ -664,7 +665,6 @@ void halve_it()
 
                     i = i - 1;
                 }
-                //}
             }
             cur_mark++;
         }
@@ -834,18 +834,16 @@ void halve_it()
                         if (freqptr->value == value)
                         {
                             freqptr->count++;
-                            break;
+                            goto value_found;
                         }
                         freqptr++;
                     }
-                    // TODO any way to avoid this check?
-                    if (k == 0)
-                    {
-                        // Not found above, so create a new entry
-                        num_freqs++;
-                        freqptr->value = value;
-                        freqptr->count = 1;
-                    }
+                    // Not found above, so create a new entry
+                    num_freqs++;
+                    freqptr->value = value;
+                    freqptr->count = 1;
+
+                value_found:
                     value = cur_mark->value_and;
                 }
             }
@@ -897,7 +895,8 @@ void halve_it()
         
         dprintf("Stray and.w/or.w\n----------------\n");
         cur_mark = mark_buf;
-        for (i = num_actions - 1; i >= 0; i--)
+        loop_count = num_actions - 1;
+        do
         {
             uint16_t cur_action = cur_mark->action;
             if (cur_action & (A_AND_OR | A_AND | A_OR))
@@ -928,7 +927,7 @@ void halve_it()
 
             }
             cur_mark++;
-        }
+        } while (--loop_count != -1);
 
 
         // It's almost time to output the shifted frame's code and data.
@@ -1038,7 +1037,7 @@ void halve_it()
         dprintf("Post increment optimisations\n----------------------------\n");
         uint32_t prev_offset = potential->screen_offset;
         uint16_t distance_between_actions = potential->bytes_affected;
-        int consecutive_instructions = 0;
+        short consecutive_instructions = 0;
         
         // NOTE: we're going to scan one entry past the end of the table in order to catch that
         //       corner case where the last instruction is optimisable
@@ -1062,8 +1061,9 @@ void halve_it()
                     {
                         // We have a good post-increment case so let's patch some instructions up
                         POTENTIAL_CODE *patch_instructions = out_potential - consecutive_instructions - 1;
-                        patch_instructions->bytes_affected = -1;        // Signal lea emission at the start of the block
-                        for (i = consecutive_instructions - 1; i >= 0; i--)
+                        patch_instructions->bytes_affected = 0xffff;        // Signal lea emission at the start of the block
+                        loop_count = consecutive_instructions - 1;
+                        do
                         {
                             switch (patch_instructions->ea)
                             {
@@ -1092,15 +1092,8 @@ void halve_it()
                                 }
                                 break;
                             }
-                            //if (i != consecutive_instructions - 1)
-                            //{
-                            //    // Leave the first screen offset intact, wipe the rest.
-                            //    // This way we'll be able to calculate the lea d(a1),a1 offsets
-                            //    // by subtracting the first offsets of each (a1)+ block
-                            //    patch_instructions->screen_offset = 0;
-                            //}
                             patch_instructions++;
-                        }
+                        } while (--loop_count != -1);
                         // Final instruction will be a (a1), i.e. no post increment
                         switch (patch_instructions->ea)
                         {
@@ -1113,7 +1106,7 @@ void halve_it()
                             dprintf("move.w <ea>,$%04x(a1) -> (a1)\n", patch_instructions->screen_offset);
                             break;
                         }
-                        patch_instructions->bytes_affected = -2;    // Signal updating of lea counter
+                        patch_instructions->bytes_affected = 0xfffe;    // Signal updating of lea counter
                     }
 
                     // Reset our counter and move on
@@ -1125,12 +1118,23 @@ void halve_it()
         }
 
         // Finally, emit the damn code!
-
+        
         //uint16_t screen_offset = 0;
         uint16_t *lea_patch_address = 0;
         uint16_t lea_offset = 0;
         int emit_swap = 0;
         dprintf("\n\nFinal code:\n-----------\n");
+        dprintf("sprite_code_shift_%i:\n", shift);
+
+        // We need to load a0 with the sprite data
+        // Safe to assume that there will be data, hopefully!
+        // Also, assuming that we won't dump more than 32k of code so the offset can be pc relative!
+        // (geez, lots of assumptions)
+        dprintf("lea sprite_data_shift_%i(pc),a0\n", shift);
+        *write_code++ = LEA_PC_A0;
+        uint16_t *first_lea_offset = write_code;
+        write_code++;
+
         for (out_potential = potential; out_potential < potential_end; out_potential++)
         {
             // Emit a SWAP if required
@@ -1149,7 +1153,7 @@ void halve_it()
             }
 
             // Emit extra lea if needed - last instruction in a (a1)+/(a1) block should be (a1)
-            if (out_potential->bytes_affected == -1)
+            if (out_potential->bytes_affected == 0xffff)
             {
                 // We are in the first instruction of a (a1)+/(a1) instruction block, so we need to output
                 // a lea d(a1),a1 instruction. We calculate d relative to previous value of a1, which at
@@ -1163,7 +1167,7 @@ void halve_it()
             }
 
             // Update lea counter at the end of the (a1)+/(a1) block
-            if (out_potential->bytes_affected == -2)
+            if (out_potential->bytes_affected == 0xfffe)
             {
                 lea_offset = out_potential->screen_offset;
                 dprintf("lea %i(a1),a1\n", lea_offset);
@@ -1244,14 +1248,14 @@ void halve_it()
             }
 
             // Write screen offsets if needed
-            switch (out_potential->ea)
+            if (((out_potential->base_instruction) & 0xffff0000) == MOVEM_L_FROM_REG || (out_potential->base_instruction & 0xffff0000) == MOVEM_W_FROM_REG)
             {
-            case MOVEM_L_FROM_REG:
-            case MOVEM_W_FROM_REG:
                 *write_code++ = (uint16_t)out_potential->screen_offset;
                 dprintf("$%04x(a1)\n", out_potential->screen_offset);
-                break;
+            }
 
+            switch (out_potential->ea)
+            {
             case EA_D_A1:
             case EA_MOVE_D_A1:
                 *write_code++ = (uint16_t)out_potential->screen_offset;
@@ -1286,7 +1290,51 @@ void halve_it()
 
         }
 
-        // TODO: glue the sprite_data buffer immediately after this
+        // Now that we know the offset which the sprite data will be written,
+        // let's fill in that lea gap we left at the beginning.
+        *first_lea_offset = write_code - first_lea_offset;
+
+        // Glue the sprite_data buffer immediately after the code
+        
+        uint16_t *read_sprite_data=sprite_data;
+#ifdef PRINT_DEBUG
+        printf("sprite_data_shift_%i:\ndc.w ", shift);
+        j = 0;
+        for (i = write_sprite_data - sprite_data - 1; i >= 0; i--)
+        {
+            if (j != 15)
+            {
+                if (i != 0)
+                {
+                    printf("$%04x,", *read_sprite_data++);
+                }
+                else
+                {
+                    printf("$%04x", *read_sprite_data++);
+                }
+                j++;
+            }
+            else
+            {
+                j = 0;
+                if (i != 0)
+                {
+                    printf("$%04x\ndc.w ", *read_sprite_data++);
+                }
+                else
+                {
+                    // Corner case, if last word to be output is at the end of a printed line, don't print spurious "dc.w"
+                    printf("$%04x\n", *read_sprite_data++);
+                }
+            }
+
+        }
+#endif
+        loop_count = write_sprite_data - sprite_data - 1;
+        do
+        {
+            *write_code++ = *read_sprite_data++;
+        } while (--loop_count != -1);
 
         //
         // Prepare for next frame
