@@ -94,6 +94,10 @@
 #define EA_MOVE_A1_POST (0x19<<6)
 #define EA_MOVE_A1      (0x11<<6)
 
+// Misc defines
+
+#define EMIT_SWAP       0x10000
+
 typedef enum _ACTIONS
 {
     // Actions, i.e. what instructions should we emit per case.
@@ -222,15 +226,16 @@ void halve_it()
     // Flags that affect how the routine will behave.
     // Setting these up can affect the compiled routine as a lot of code
     // can be excluded.
-    short screen_width = 320;             // Actual screen width in pixels
-    short screen_height = 200;            // Actual screen height in pixels
-    short screen_planes = 4;              // How many planes our screen is
     // If you set the 2 below values to -1 then extra code for determining the sprite dimensions
     // will be added, plus extra CPU overhead. Just sayin'.
     // (also, this will have an impact on every place in the code
     // where sprite dimensions can be hardcoded by the compiler)
     short sprite_width = -1;              // Sprite width in pixels. -1=auto detect
     short sprite_height = -1;             // Sprite height in pixels. -1=auto detect
+    short screen_width = 320;             // Actual screen width in pixels
+    // General constants
+    short screen_height = 200;            // Actual screen height in pixels
+    short screen_planes = 4;              // How many planes our screen is
     short sprite_planes = 4;              // How many planes our sprite is
     // How many planes we need to mask in order for the sprite to be drawn properly.
     // This is different from sprite_planes because for example we might have a 1bpp sprite
@@ -476,7 +481,7 @@ void halve_it()
         // 13 .l registers i.e. 26 .w moves.
         // TODO: maybe we could keep a number A_MOVE generated in step 1 and skip this whole chunk if it's 0?
         
-        dprintf("movem.l optimisations\n---------------------\n");
+        dprintf("\nmovem.l optimisations\n---------------------\n");
         MARK *marks_end = cur_mark;           // Save end of marks buffer
         cur_mark = mark_buf;
         MARK *temp_mark;
@@ -506,13 +511,15 @@ void halve_it()
                     // 6 move.w = 3 move.l, and from 3 move.l onwards it's more optimal to go movem.l
                     num_moves = num_moves & -2;                         // Even out the number as we can't move half a longword!
                     out_potential[1].screen_offset = cur_mark->offset;  // Save screen offset for the second movem
+                    dprintf("movem.l - ");
                     for (j = num_moves - 1; j >= 0; j--)
                     {
                         *write_sprite_data++ = cur_mark->value_or;
-                        dprintf("movem.l - dc.l %i\n", cur_mark->value_or);
+                        dprintf("$%08x, \n", cur_mark->value_or);
                         cur_mark->action = A_DONE;
                         cur_mark++;
                     }
+                    dprintf("\n");
                     cur_mark--;         // Rewind pointer back once because we will skip a mark since we increment the pointer below (right?)
                     i = i - (num_moves-1);  // Decrease amount of iterations too
                     // We need to emit 2 pairs of movem.ls: one to read the data from RAM and one to write it back to screen buffer.
@@ -574,7 +581,7 @@ void halve_it()
         // exactly 3-5 A_MOVEs. That is, unless I'm missing something.
         // So this block of code should be simplified to just chekcing for 3-5 A_MOVEs
         
-        dprintf("movem.w optimisations\n---------------------\n");
+        dprintf("\nmovem.w optimisations\n---------------------\n");
         cur_mark = mark_buf;
         for (i = num_actions - 1; i >= 0; i--)
         {
@@ -598,13 +605,15 @@ void halve_it()
                 if (num_moves >= 3)
                 {
                     out_potential[1].screen_offset = cur_mark->offset;  // Save screen offset for the second movem
+                    dprintf("movem.w - ");
                     for (j = num_moves - 1; j >= 0; j--)
                     {
-                        dprintf("movem.w - dc.w %i\n", cur_mark->value_or);
+                        dprintf("$%04x,", cur_mark->value_or);
                         *write_sprite_data++ = cur_mark->value_or;
                         cur_mark->action = A_DONE;
                         cur_mark++;
                     }
+                    dprintf("\n");
                     cur_mark--; // Rewind pointer back once because we will skip a mark since we increment the pointer below (right?)
                     i = i - (num_moves - 1);  // Decrease amount of iterations too
                     // We need to emit 2 pairs of movem.ws: one to read the data from RAM and one to write it back to screen buffer.
@@ -639,7 +648,7 @@ void halve_it()
 
         // Check if any consecutive moves survived the above two passes that could be combined in move.ls
         
-        dprintf("move.l optimisations\n--------------------\n");
+        dprintf("\nmove.l optimisations\n--------------------\n");
         cur_mark = mark_buf;
         int num_movel = 0;
         for (i = num_actions - 1 - 1; i >= 0; i--)
@@ -650,7 +659,7 @@ void halve_it()
                 {
                     uint32_t longval;
                     longval = (cur_mark->value_or << 16) | cur_mark[1].value_or;
-                    dprintf("move.l (a0)+,%i(a1) - dc.l $%04x\n", cur_mark->offset, longval);
+                    dprintf("move.w #$%04x,$%04x(a1) - move.w #$%04x,$%04x(a1) -> move.l #$%08x,$%04x(a1)\n", cur_mark->value_or, cur_mark->offset, cur_mark[1].value_or, cur_mark[1].offset, longval, cur_mark->offset);
                     // TODO: Is there a way we can include a longword into the frequency table without massive amounts of pain?
                     //       For example, the two words have to be consecutive into the table and on even boundary so they can be loaded
                     //       in a single register. But, what happens if only one of the two words makes it into top 16 values?
@@ -687,7 +696,7 @@ void halve_it()
         // movep.l dn, 1(a0); 6
         // addq.w #8, a0; 2 (total 11)
         
-        dprintf("movep.l optimisations\n---------------------\n");
+        dprintf("\nmovep.l optimisations\n---------------------\n");
         cur_mark = mark_buf;
         for (i = num_actions - 1 - 3; i >= 0; i--)
         {
@@ -711,13 +720,13 @@ void halve_it()
                         uint32_t longval;
                         longval = ((cur_mark->value_or << 16) & 0xff000000) | ((cur_mark[1].value_or << 16) & 0x00ff0000) | ((cur_mark[2].value_or >> 8) & 0x0000ff00) | (cur_mark[3].value_or & 0x000000ff);
                         longval = (cur_mark->value_or << 16) | cur_mark[1].value_or;
-                        dprintf(";movep case - crack out the champage, woohoo!\nmove.l #%i,d0 - movep.l d0,1(a0)\n", cur_mark->offset);
+                        dprintf(";movep case - crack out the champage, woohoo!\nmove.l #%i,d0 - movep.l d0,1(a0)\n", longval);
                         cur_mark->action = A_DONE;
 
                         out_potential->base_instruction = MOVEP_L; // movep.l d0,1(a1)
                         out_potential->screen_offset = cur_mark->offset;
                         out_potential->value = longval;
-                        out_potential->bytes_affected = 0;          // movep is a special case, disregard
+                        out_potential->bytes_affected = 0xffff;          // movep is a special case, needs a lea beforehand
                         out_potential++;
 
                         cur_mark++;
@@ -738,7 +747,7 @@ void halve_it()
         // Check if we have 2 consecutive AND/OR pairs
         // We can combine those into and.l/or.l pair
         
-        dprintf("andi.l/ori.l optimisations\n--------------------------\n");
+        dprintf("\nandi.l/ori.l pair optimisations\n-------------------------------\n");
         uint16_t mark_to_search_for = A_AND_OR;
         if (!use_masking)
         {
@@ -748,37 +757,82 @@ void halve_it()
         cur_mark = mark_buf;
         for (i = num_actions - 1 - 1; i >= 0; i--)
         {
-            if (cur_mark->action == mark_to_search_for)
+            if (cur_mark->action & mark_to_search_for)
             {
                 if (cur_mark[1].action == mark_to_search_for && cur_mark[1].offset-cur_mark->offset==2)
                 {
-                    uint32_t longval;
-                    longval = (cur_mark->value_or << 16) | cur_mark[1].value_or;
                     cur_mark->action = A_DONE;
 
                     if (use_masking)
                     {
                         // We have to output an and.l
-                        out_potential->base_instruction = ANDI_L; // andi.l #xxx,
+                        out_potential->base_instruction = ANDI_L;   // andi.l #xxx,
                         out_potential->ea = EA_D_A1;                // d(a1)
                         out_potential->screen_offset = cur_mark->offset;
-                        out_potential->value = (cur_mark[-1].value_and << 16) | (cur_mark->value_and & 0xffff);
+                        out_potential->value = (cur_mark->value_and << 16) | (cur_mark[1].value_and & 0xffff);
                         out_potential->bytes_affected = 4;          // One longword s'il vous plait
+                        dprintf("andi.w #$%04x,$%04x(a1) - andi.w #$%04x,$%04x(a1) -> andi.l #$%08x,$%04x(a1)\n", cur_mark->value_and, cur_mark->offset, cur_mark[1].value_and, cur_mark[1].offset, out_potential->value, cur_mark->offset);
                         out_potential++;
-                        dprintf("andi.l #$%08x,%i(a1)\n", cur_mark->value_and, cur_mark->offset);
                     }
 
-                    out_potential->base_instruction = ORI_L;     // ori.l #xxx,
-                    out_potential->ea = EA_D_A1;                 // d(a1)
+                    out_potential->base_instruction = ORI_L;        // ori.l #xxx,
+                    out_potential->ea = EA_D_A1;                    // d(a1)
                     out_potential->screen_offset = cur_mark->offset;
-                    out_potential->value = (cur_mark[-1].value_or << 16) | (cur_mark->value_or & 0xffff);
-                    out_potential->bytes_affected = 4;          // One longword s'il vous plait
+                    out_potential->value = (cur_mark->value_or << 16) | (cur_mark[1].value_or & 0xffff);
+                    out_potential->bytes_affected = 4;              // One longword s'il vous plait
+                    dprintf("ori.w  #$%04x,$%04x(a1) - ori.w  #$%04x,$%04x(a1) -> ori.l  #$%08x,$%04x(a1)\n", cur_mark->value_or, cur_mark->offset, cur_mark[1].value_or, cur_mark[1].offset, out_potential->value, cur_mark->offset);
                     out_potential++;
-                    dprintf("ori.l #$%08x,%i(a1)\n", cur_mark->value_or, cur_mark->offset);
 
                     cur_mark++;
                     cur_mark->action = A_DONE;
 
+                    i = i - 1;
+                }
+            }
+            cur_mark++;
+        }
+
+        // Any stray and.w or or.w pairs get processed ehre
+        dprintf("\nandi.l/ori.l optimisations\n--------------------------\n");
+        cur_mark = mark_buf;
+        for (i = num_actions - 1 - 1; i >= 0; i--)
+        {
+            if (use_masking)
+            {
+                if (cur_mark->action & A_AND)
+                {
+                    if (cur_mark[1].action & A_AND && cur_mark[1].offset - cur_mark->offset == 2)
+                    {
+                        uint32_t longval;
+                        cur_mark->action = A_DONE;
+
+                        longval = (cur_mark->value_and << 16) | cur_mark[1].value_and;
+                        out_potential->base_instruction = ANDI_L;   // andi.l #xxx,
+                        out_potential->ea = EA_D_A1;                // d(a1)
+                        out_potential->screen_offset = cur_mark->offset;
+                        out_potential->value = (cur_mark->value_and << 16) | (cur_mark[1].value_and & 0xffff);
+                        out_potential->bytes_affected = 4;          // One longword s'il vous plait
+                        dprintf("andi.w #$%04x,$%04x(a1) - andi.w #$%04x,$%04x(a1) -> andi.l #$%08x,$%04x(a1)\n", cur_mark->value_and, cur_mark->offset, cur_mark[1].value_and, cur_mark[1].offset, out_potential->value, cur_mark->offset);
+                        out_potential++;
+                        cur_mark++;
+                        cur_mark->action = A_DONE;
+                        i = i - 1;
+                    }
+                }
+            }
+            if (cur_mark->action & A_OR)
+            {
+                if (cur_mark[1].action & A_OR && cur_mark[1].offset - cur_mark->offset == 2)
+                {
+                    out_potential->base_instruction = ORI_L;        // ori.l #xxx,
+                    out_potential->ea = EA_D_A1;                    // d(a1)
+                    out_potential->screen_offset = cur_mark->offset;
+                    out_potential->value = (cur_mark->value_or << 16) | (cur_mark[1].value_or & 0xffff);
+                    out_potential->bytes_affected = 4;              // One longword s'il vous plait
+                    dprintf("ori.w  #$%04x,$%04x(a1) - ori.w  #$%04x,$%04x(a1) -> ori.l  #$%08x,$%04x(a1)\n", cur_mark->value_or, cur_mark->offset, cur_mark[1].value_or, cur_mark[1].offset, out_potential->value, cur_mark->offset);
+                    out_potential++;
+                    cur_mark++;
+                    cur_mark->action = A_DONE;
                     i = i - 1;
                 }
             }
@@ -791,12 +845,12 @@ void halve_it()
         // Any leftover moves are just going to be move.ws
         // TODO: Hmmm, since a2-a6 aren't going to be used by and/or then we could use them for move.w
         
-        dprintf("move.w\n------\n");
+        dprintf("\nmove.w\n------\n");
         for (i = num_actions - 1; i >= 0; i--)
         {
             if (cur_mark->action == A_MOVE)
             {
-                dprintf("move.w #$%04x,%i(a1)\n", cur_mark->value_or, cur_mark->offset);
+                dprintf("move.w #$%04x,$%04x(a1)\n", cur_mark->value_or, cur_mark->offset);
                 // Let's not mark the actions as done yet, the values could be used in the frequency table
                 //cur_mark->action = A_DONE;
                 out_potential->base_instruction = MOVEI_W;  // move.w #xxx,
@@ -868,7 +922,7 @@ void halve_it()
             num_freqs = 15;
         }
         uint16_t *cached_values = write_sprite_data;
-        dprintf("Most frequent values\n--------------------\n");
+        dprintf("\nMost frequent values\n--------------------\n");
         // Keep highest frequency values in low words of registers,
         // since it will probably result in fewer SWAP emissions
         uint16_t *write_arranged_values = write_sprite_data + 1;
@@ -897,7 +951,7 @@ void halve_it()
 
         // Anything that remains from the above passes we can safely assume that falls under the and.w/or.w case
         
-        dprintf("Stray and.w/or.w\n----------------\n");
+        dprintf("\nStray and.w/or.w\n----------------\n");
         cur_mark = mark_buf;
         loop_count = num_actions - 1;
         do
@@ -914,7 +968,7 @@ void halve_it()
                     out_potential->value = cur_mark->value_and;
                     out_potential->bytes_affected = 2;              // Two bytes
                     out_potential++;
-                    dprintf("andi.w #$%04x,%i(a1)\n", cur_mark->value_and, cur_mark->offset);
+                    dprintf("andi.w #$%04x,$%04x(a1)\n", cur_mark->value_and, cur_mark->offset);
                 }
 
                 if (cur_action & (A_AND_OR | A_OR))
@@ -925,7 +979,7 @@ void halve_it()
                     out_potential->value = cur_mark->value_or;
                     out_potential->bytes_affected = 2;                  // Two bytes
                     out_potential++;
-                    dprintf("ori.w #$%04x,%i(a1)\n", cur_mark->value_or, cur_mark->offset);
+                    dprintf("ori.w  #$%04x,$%04x(a1)\n", cur_mark->value_or, cur_mark->offset);
                 }
                 cur_mark->action = A_DONE;
 
@@ -945,7 +999,7 @@ void halve_it()
         // TODO: could some of the lower frequency values be generated from the registers using simple instructions like
         //       NOT/NEG etc?
 
-        dprintf("Data register optimisations\n---------------------------\n");
+        dprintf("\nData register optimisations\n---------------------------\n");
         POTENTIAL_CODE *potential_end = out_potential;
         uint16_t swaptable[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };                 // SWAP state of registers
         for (out_potential = cacheable_code; out_potential < potential_end; out_potential++)
@@ -955,25 +1009,6 @@ void halve_it()
             {
                 if (cur_value == cached_values[i])
                 {
-                    switch (out_potential->base_instruction)
-                    {
-                    case MOVEI_W:
-                        out_potential->base_instruction = MOVED_W;          // Modify instruction
-                        out_potential->base_instruction |= i >> 1;          // Register field (D0-D7)
-                        dprintf("move.w #$%04x,%i(a1) -> move.w d%i,%i(a1)\n",out_potential->value,out_potential->screen_offset,i>>1,out_potential->screen_offset);
-                        break;
-                    case ANDI_W:
-                        out_potential->base_instruction = ANDD_W;           // Modify instruction
-                        out_potential->base_instruction |= (i >> 1) << 9;   // Register field (D0-D7)
-                        dprintf("andi.w #$%04x,%i(a1) -> and.w d%i,%i(a1)\n", out_potential->value, out_potential->screen_offset, i >> 1, out_potential->screen_offset);
-                        break;
-                    case ORI_W:
-                        out_potential->base_instruction = ORD_W;            // Modify instruction
-                        out_potential->base_instruction |= (i >> 1) << 9;   // Register field (D0-D7)
-                        dprintf("ori.w #$%04x,%i(a1) -> or.w d%i,%i(a1)\n", out_potential->value, out_potential->screen_offset, i >> 1, out_potential->screen_offset);
-                        break;
-
-                    }
                     if ((i & 1) == 0)
                     {
                         // We need the high word of the register
@@ -984,8 +1019,8 @@ void halve_it()
                         else
                         {
                             // We need to emit SWAP, so place a mark at the upper 16 bits (which are unused)
-                            dprintf("have to output swap for the above\n");
-                            out_potential->value |= 0x10000;
+                            dprintf("swap d%i\n", i >> 1);
+                            out_potential->value |= EMIT_SWAP;
                             swaptable[i >> 1] = 0;
                         }
 
@@ -996,14 +1031,32 @@ void halve_it()
                         if (swaptable[i >> 1])
                         {
                             // We need to emit SWAP, so place a mark at the upper 16 bits (which are unused)
-                            dprintf("have to output swap for the above\n");
-                            out_potential->value |= 0x10000;
+                            dprintf("swap d%i\n", i >> 1);
+                            out_potential->value |= EMIT_SWAP;
                             swaptable[i >> 1] = 0;
                         }
                         else
                         {
                             // The register is already swapped, do nothing
                         }
+                    }
+                    switch (out_potential->base_instruction)
+                    {
+                    case MOVEI_W:
+                        out_potential->base_instruction = MOVED_W;          // Modify instruction
+                        out_potential->base_instruction |= i >> 1;          // Register field (D0-D7)
+                        dprintf("move.w #$%04x,$%04x(a1) -> move.w d%i,$%04x(a1)\n",out_potential->value,out_potential->screen_offset,i>>1,out_potential->screen_offset);
+                        break;
+                    case ANDI_W:
+                        out_potential->base_instruction = ANDD_W;           // Modify instruction
+                        out_potential->base_instruction |= (i >> 1) << 9;   // Register field (D0-D7)
+                        dprintf("andi.w #$%04x,$%04x(a1) -> and.w d%i,$%04x(a1)\n", out_potential->value, out_potential->screen_offset, i >> 1, out_potential->screen_offset);
+                        break;
+                    case ORI_W:
+                        out_potential->base_instruction = ORD_W;            // Modify instruction
+                        out_potential->base_instruction |= (i >> 1) << 9;   // Register field (D0-D7)
+                        dprintf("ori.w  #$%04x,$%04x(a1) -> or.w  d%i,$%04x(a1)\n", out_potential->value, out_potential->screen_offset, i >> 1, out_potential->screen_offset);
+                        break;
 
                     }
                 }
@@ -1038,7 +1091,7 @@ void halve_it()
         // Which means we start breaking even after above 3 consecutive (a1)+.
         // Hey, it's the movem.l case once again :)
 
-        dprintf("Post increment optimisations\n----------------------------\n");
+        dprintf("\nPost increment optimisations\n----------------------------\n");
         uint32_t prev_offset = potential->screen_offset;
         uint16_t distance_between_actions = potential->bytes_affected;
         short consecutive_instructions = 0;
@@ -1142,7 +1195,7 @@ void halve_it()
         for (out_potential = potential; out_potential < potential_end; out_potential++)
         {
             // Emit a SWAP if required
-            if (((out_potential->base_instruction & 0xffc0) == MOVED_W || (out_potential->base_instruction & 0xf1ff) == ORD_W || (out_potential->base_instruction & 0xf1ff) == ANDI_W) && out_potential->value & 0x10000)
+            if (((out_potential->base_instruction & 0xffc0) == MOVED_W || (out_potential->base_instruction & 0xf1ff) == ORD_W || (out_potential->base_instruction & 0xf1ff) == ANDI_W) && out_potential->value & EMIT_SWAP)
             {
                 if (out_potential->base_instruction == MOVED_W)
                 {
