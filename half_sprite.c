@@ -99,15 +99,15 @@ typedef enum _ACTIONS
     // Actions, i.e. what instructions should we emit per case.
     // Initially every individual .w write in screen is marked,
     // but gradually these can get grouped into .l and beyond.
-    A_DONE          =0x00,
-    A_MOVE          =0x01,
-    A_OR            =0x02,
-    A_AND_OR        =0x04,
-    A_AND           =0x08,
-    A_AND_OR_LONG   =0x10,
-    A_OR_LONG       =0x11,
-    A_MOVEM_LONG    =0x12,
-    A_MOVEM         =0x14,
+    A_DONE          =0x01,
+    A_MOVE          =0x02,
+    A_OR            =0x04,
+    A_AND_OR        =0x08,
+    A_AND           =0x10,
+    A_AND_OR_LONG   =0x11,
+    A_OR_LONG       =0x12,
+    A_MOVEM_LONG    =0x14,
+    A_MOVEM         =0x18,
 } ACTIONS;
 
 typedef struct _MARK
@@ -374,6 +374,12 @@ void halve_it()
         uint16_t plane_counter = 0;
         for (i = BUFFER_SIZE / 2 - 1; i >= 0; i--)
         {
+            // If we don't have to mask any bit, then skip all bitplanes
+            if (val_and == 0xffff)
+            {
+                goto skipword;
+            }
+
             uint16_t val_or = *buf;
 
             if (val_or == 0)
@@ -744,8 +750,6 @@ void halve_it()
         {
             if (cur_mark->action == mark_to_search_for)
             {
-                //if (cur_mark+1!=cur_mark_end)
-                //{
                 if (cur_mark[1].action == mark_to_search_for && cur_mark[1].offset-cur_mark->offset==2)
                 {
                     uint32_t longval;
@@ -758,26 +762,25 @@ void halve_it()
                         out_potential->base_instruction = ANDI_L; // andi.l #xxx,
                         out_potential->ea = EA_D_A1;                // d(a1)
                         out_potential->screen_offset = cur_mark->offset;
-                        out_potential->value = cur_mark->value_and;
+                        out_potential->value = (cur_mark[-1].value_and << 16) | (cur_mark->value_and & 0xffff);
                         out_potential->bytes_affected = 4;          // One longword s'il vous plait
                         out_potential++;
-                        dprintf("andi.l #$%04x,%i(a1)\n", cur_mark->value_and, cur_mark->offset);
+                        dprintf("andi.l #$%08x,%i(a1)\n", cur_mark->value_and, cur_mark->offset);
                     }
 
                     out_potential->base_instruction = ORI_L;     // ori.l #xxx,
                     out_potential->ea = EA_D_A1;                 // d(a1)
                     out_potential->screen_offset = cur_mark->offset;
-                    out_potential->value = cur_mark->value_or;
+                    out_potential->value = (cur_mark[-1].value_or << 16) | (cur_mark->value_or & 0xffff);
                     out_potential->bytes_affected = 4;          // One longword s'il vous plait
                     out_potential++;
-                    dprintf("ori.l #$%04x,%i(a1)\n", cur_mark->value_or, cur_mark->offset);
+                    dprintf("ori.l #$%08x,%i(a1)\n", cur_mark->value_or, cur_mark->offset);
 
                     cur_mark++;
                     cur_mark->action = A_DONE;
 
                     i = i - 1;
                 }
-                //}
             }
             cur_mark++;
         }
@@ -857,7 +860,8 @@ void halve_it()
         // Write the top 16 values to the sprite data buffer
         // There's a small chance that there are less than 16 values
         // TODO: this has to be an even number for the movem!
-        
+        // TODO: if the sum of frequent values is not worth the movem.l, don't output anything
+
         freqptr = &freqtab[num_freqs];
         if (num_freqs > 15)
         {
@@ -1166,13 +1170,6 @@ void halve_it()
                 dprintf("lea %i(a1),a1\n", lea_offset);
             }
 
-            // Update lea counter at the end of the (a1)+/(a1) block
-            if (out_potential->bytes_affected == 0xfffe)
-            {
-                lea_offset = out_potential->screen_offset;
-                dprintf("lea %i(a1),a1\n", lea_offset);
-            }
-
             // Write opcode
             *write_code++ = out_potential->base_instruction | out_potential->ea;
 #ifdef PRINT_DEBUG
@@ -1250,16 +1247,16 @@ void halve_it()
             // Write screen offsets if needed
             if (((out_potential->base_instruction) & 0xffff0000) == MOVEM_L_FROM_REG || (out_potential->base_instruction & 0xffff0000) == MOVEM_W_FROM_REG)
             {
-                *write_code++ = (uint16_t)out_potential->screen_offset;
-                dprintf("$%04x(a1)\n", out_potential->screen_offset);
+                *write_code++ = (uint16_t)out_potential->screen_offset - lea_offset;
+                dprintf("$%04x(a1)\n", out_potential->screen_offset - lea_offset);
             }
 
             switch (out_potential->ea)
             {
             case EA_D_A1:
             case EA_MOVE_D_A1:
-                *write_code++ = (uint16_t)out_potential->screen_offset;
-                dprintf("$%04x(a1)\n", out_potential->screen_offset);
+                *write_code++ = (uint16_t)out_potential->screen_offset - lea_offset;
+                dprintf("$%04x(a1)\n", out_potential->screen_offset - lea_offset);
                 break;
 
             case EA_A1_POST:
@@ -1270,6 +1267,13 @@ void halve_it()
             default:
                 break;
             }
+
+            // Update lea counter at the end of the (a1)+/(a1) block
+            if (out_potential->bytes_affected == 0xfffe)
+            {
+                lea_offset = out_potential->screen_offset;
+            }
+
 
             if (out_potential->ea == EA_A1 || out_potential->ea == EA_MOVE_A1)
             {
