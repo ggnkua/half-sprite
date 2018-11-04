@@ -1,42 +1,42 @@
-//                                                                                
-//                             `.-://++oooooo+++/:-.`                             
-//                        .-/osssssssssssssssssssssssso/:.                        
-//                    `:+ssssssssssssssssssssssssssssssssss+:`                    
-//                 `:osssssssssssssssssoooooossssssssssssssssso:`                 
-//               -+ssssssssssss+/:-.`          `.-:/+ssssssssssss+-               
-//             -ossssssssss+:.                        .:+sssssssssso:             
-//           -osssssssss/-                                ./ssssssssso-           
-//         `+sssssssso:`                                     -ossssssss+`         
-//        -sssssssso-                                          -ossssssss-        
-//       :ssssssss:                                              :ssssssss/       
-//      /ssssssso`                       `````                    `+sssssss/      
-//     /sssssss+                   `-/ossssssssssssooooooo+`        /sssssss/     
-//    -sssssss+                  :ossssssssssssssssssssssss`         /sssssss:    
-//   `ossssss+                 -ossssssssssssssssssssssssss`          +sssssss`   
-//   /sssssss.                :ssssssso-`    `/ssssss+`````           `sssssss/   
-//  `ossssss/                -sssssss:         :sssssso`               :sssssss`  
-//  -sssssss.               `ossssss/           /ssssss+               `sssssss-  
-//  :sssssso                .sssssss`           `sssssss.               ossssss/  
-//  /sssssso                :sssssss             ossssss:               +ssssss+  
-//  /sssssso                -sssssss`            ossssss:               +ssssss+  
-//  :sssssso`               .sssssss-           `sssssss.               ossssss/  
-//  .sssssss.                +sssssss.          +sssssso               .sssssss-  
-//  `ossssss/                .ssssssss:`      -osssssss.               /sssssss`  
-//   :sssssss.                .osssssssso+++osssssssso.               `sssssss/   
-//   `osssssso`                `/sssssssssssssssssso:                 +sssssso`   
-//    -sssssss+                  `-/ossssssssssso/.                  /sssssss-    
-//     :sssssss+`                     `.-----.`                    `+sssssss/     
-//      :ssssssso.                                                .osssssss/      
-//       :ssssssss/`                                             :ssssssss:       
-//        .ossssssso:                                          -ossssssss-        
-//         `/sssssssso:`                                    `:ossssssss+`         
-//           .osssssssss+-`                              `-+ssssssssso-           
-//             -+ssssssssss+:.`                      `.:+sssssssssso-             
-//               .+sssssssssssso+:-.``        ``.-:+ossssssssssss+.               
-//                 `-+ssssssssssssssssssssssssssssssssssssssss+:`                 
-//                    `-/osssssssssssssssssssssssssssssssso/-`                    
-//                        `-:+osssssssssssssssssssssso+/-`                        
-//                             `..:://+++oo+++//::-.`                             
+//
+//                             `.-://++oooooo+++/:-.`
+//                        .-/osssssssssssssssssssssssso/:.
+//                    `:+ssssssssssssssssssssssssssssssssss+:`
+//                 `:osssssssssssssssssoooooossssssssssssssssso:`
+//               -+ssssssssssss+/:-.`          `.-:/+ssssssssssss+-
+//             -ossssssssss+:.                        .:+sssssssssso:
+//           -osssssssss/-                                ./ssssssssso-
+//         `+sssssssso:`                                     -ossssssss+`
+//        -sssssssso-                                          -ossssssss-
+//       :ssssssss:                                              :ssssssss/
+//      /ssssssso`                       `````                    `+sssssss/
+//     /sssssss+                   `-/ossssssssssssooooooo+`        /sssssss/
+//    -sssssss+                  :ossssssssssssssssssssssss`         /sssssss:
+//   `ossssss+                 -ossssssssssssssssssssssssss`          +sssssss`
+//   /sssssss.                :ssssssso-`    `/ssssss+`````           `sssssss/
+//  `ossssss/                -sssssss:         :sssssso`               :sssssss`
+//  -sssssss.               `ossssss/           /ssssss+               `sssssss-
+//  :sssssso                .sssssss`           `sssssss.               ossssss/
+//  /sssssso                :sssssss             ossssss:               +ssssss+
+//  /sssssso                -sssssss`            ossssss:               +ssssss+
+//  :sssssso`               .sssssss-           `sssssss.               ossssss/
+//  .sssssss.                +sssssss.          +sssssso               .sssssss-
+//  `ossssss/                .ssssssss:`      -osssssss.               /sssssss`
+//   :sssssss.                .osssssssso+++osssssssso.               `sssssss/
+//   `osssssso`                `/sssssssssssssssssso:                 +sssssso`
+//    -sssssss+                  `-/ossssssssssso/.                  /sssssss-
+//     :sssssss+`                     `.-----.`                    `+sssssss/
+//      :ssssssso.                                                .osssssss/
+//       :ssssssss/`                                             :ssssssss:
+//        .ossssssso:                                          -ossssssss-
+//         `/sssssssso:`                                    `:ossssssss+`
+//           .osssssssss+-`                              `-+ssssssssso-
+//             -+ssssssssss+:.`                      `.:+sssssssssso-
+//               .+sssssssssssso+:-.``        ``.-:+ossssssssssss+.
+//                 `-+ssssssssssssssssssssssssssssssssssssssss+:`
+//                    `-/osssssssssssssssssssssssssssssssso/-`
+//                        `-:+osssssssssssssssssssssso+/-`
+//                             `..:://+++oo+++//::-.`
 
 // Half sprite
 // Coded by GGN
@@ -70,20 +70,21 @@
 #define MOVEM_L_FROM_REG    (0x48c0 << 16)
 #define MOVEM_W_TO_REG      (0x4c98 << 16)
 #define MOVEM_W_FROM_REG    (0x4880 << 16)
-#define MOVEI_L             (0x203c)
-#define MOVEI_W             (0x303c)
+#define MOVEI_L             0x203c
+#define MOVEI_W             0x303c
 #define MOVEP_L             ((0x1c9 << 16) | 1)
-#define ANDI_L              (0x280)
-#define ORI_L               (0x80)
-#define ANDI_W              (0x240)
-#define ORI_W               (0x40)
-#define MOVED_W             (0x2000)
-#define ORD_W               (0x8140)
-#define ANDD_W              (0xc140)
-#define ADDQ_A1             (0x5049)
-#define LEA_D_A1            (0x43e9)
-#define SWAP                (0x4840)
-#define LEA_PC_A0           (0x41fa)
+#define ANDI_L              0x280
+#define ORI_L               0x80
+#define ANDI_W              0x240
+#define ORI_W               0x40
+#define MOVED_W             0x2000
+#define ORD_W               0x8140
+#define ANDD_W              0xc140
+#define ADDQ_A1             0x5049
+#define LEA_D_A1            0x43e9
+#define SWAP                0x4840
+#define LEA_PC_A0           0x41fa
+#define RTS                 0x4e73
 
 // Effective address encodings
 
@@ -98,7 +99,13 @@
 
 #define EMIT_SWAP       0x10000
 
-typedef enum _ACTIONS
+#ifndef _MSC_VER
+#define ACTIONTYPE : uint16_t
+#else
+#define ACTIONTYPE
+#endif
+
+typedef enum _ACTIONS ACTIONTYPE
 {
     // Actions, i.e. what instructions should we emit per case.
     // Initially every individual .w write in screen is marked,
@@ -342,13 +349,13 @@ void halve_it()
                     *mask |= *mask2;
                 }
                 // OR the mask left and right
-                // TODO: this code is currently probably wrong
                 mask = (uint16_t *)buf_mask;
                 *mask = (*mask<<1) | (mask[1] >> 15);
                 mask++;
                 for (i = 1;i < screen_width*(screen_height - 1) / 16 - 1;i++)
                 {
-                    *mask = *mask | (*mask << 1) | (*mask >> 1) | (mask[-1] << 15) | (mask[1] >> 15);
+                    uint16_t tmp_mask = *mask;
+                    *mask = tmp_mask | (tmp_mask << 1) | (tmp_mask >> 1) | (mask[-1] << 15) | (mask[1] >> 15);
                     mask++;
                 }
                 *mask = *mask | (mask[-1] << 15);
@@ -363,6 +370,21 @@ void halve_it()
     int shift;
     POTENTIAL_CODE *out_potential = potential;
 
+    // Make space for a double pointer table at the beginning as an index to all routines
+    // We'll need 16 .l pointers for the preshifts + sprite_width*2 when clipping horizontally
+    // (we'll shift the sprite sprite_width times left and as many to the right, for clipping)
+
+    uint32_t *write_pointers = (uint32_t *)write_code;
+    if (horizontal_clip)
+    {
+        write_code = write_code + (16 + sprite_width * 2) * 2;
+    }
+    else
+    {
+        // Just 16 preshifts then. 
+        write_code = write_code + 16 * 2;
+    }
+
     // Main - repeats 16 times for 16 preshifts
     // TODO: If we output clipped sprites then we need to shift left and right as many steps as the sprite's width
     for (shift = 0; shift < 16; shift++)
@@ -373,6 +395,9 @@ void halve_it()
         uint16_t *buf = (uint16_t *)buf_shift;
         uint16_t *mask = (uint16_t *)buf_mask;
         uint16_t val_and = *mask;
+        uint16_t val_or;
+
+        *write_pointers++ = write_code - output_buf;    // Mark down the entry point for this routine
 
         // Step 1: determine what actions we need to perform
         //         in order to draw the sprite on screen
@@ -385,7 +410,7 @@ void halve_it()
                 goto skipword;
             }
 
-            uint16_t val_or = *buf;
+            val_or = *buf;
 
             if (val_or == 0)
             {
@@ -698,12 +723,10 @@ void halve_it()
         
         dprintf("\nmovep.l optimisations\n---------------------\n");
         cur_mark = mark_buf;
-        for (i = num_actions - 1 - 3; i >= 0; i--)
+        loop_count = num_actions - 1 - 3;
         {
             if (cur_mark->action == A_AND_OR)
             {
-                //if (cur_mark+1!=cur_mark_end)
-                //{
                 if (cur_mark[1].action == A_AND_OR &&
                     cur_mark[2].action == A_AND_OR &&
                     cur_mark[3].action == A_AND_OR)
@@ -739,10 +762,9 @@ void halve_it()
                         i = i - 3;
                     }
                 }
-                //}
             }
             cur_mark++;
-        }
+        } while (--loop_count != -1);
 
         // Check if we have 2 consecutive AND/OR pairs
         // We can combine those into and.l/or.l pair
@@ -792,7 +814,7 @@ void halve_it()
             cur_mark++;
         }
 
-        // Any stray and.w or or.w pairs get processed ehre
+        // Any stray and.w or or.w pairs get processed here
         dprintf("\nandi.l/ori.l optimisations\n--------------------------\n");
         cur_mark = mark_buf;
         for (i = num_actions - 1 - 1; i >= 0; i--)
@@ -803,10 +825,8 @@ void halve_it()
                 {
                     if (cur_mark[1].action & A_AND && cur_mark[1].offset - cur_mark->offset == 2)
                     {
-                        uint32_t longval;
                         cur_mark->action = A_DONE;
 
-                        longval = (cur_mark->value_and << 16) | cur_mark[1].value_and;
                         out_potential->base_instruction = ANDI_L;   // andi.l #xxx,
                         out_potential->ea = EA_D_A1;                // d(a1)
                         out_potential->screen_offset = cur_mark->offset;
@@ -1179,7 +1199,6 @@ void halve_it()
         //uint16_t screen_offset = 0;
         uint16_t *lea_patch_address = 0;
         uint16_t lea_offset = 0;
-        int emit_swap = 0;
         dprintf("\n\nFinal code:\n-----------\n");
         dprintf("sprite_code_shift_%i:\n", shift);
 
@@ -1195,7 +1214,7 @@ void halve_it()
         for (out_potential = potential; out_potential < potential_end; out_potential++)
         {
             // Emit a SWAP if required
-            if (((out_potential->base_instruction & 0xffc0) == MOVED_W || (out_potential->base_instruction & 0xf1ff) == ORD_W || (out_potential->base_instruction & 0xf1ff) == ANDI_W) && out_potential->value & EMIT_SWAP)
+            if (((out_potential->base_instruction & 0xffc0) == MOVED_W || (out_potential->base_instruction & 0xf1ff) == ORD_W || (out_potential->base_instruction & 0xffc0) == ANDI_W) && out_potential->value & EMIT_SWAP)
             {
                 if (out_potential->base_instruction == MOVED_W)
                 {
@@ -1205,7 +1224,6 @@ void halve_it()
                 {
                     *write_code++ = SWAP | ((out_potential->base_instruction >> 9) & 7);
                 }
-                emit_swap = 1;
                 dprintf("swap D%i\n", out_potential->base_instruction & 7);
             }
 
@@ -1334,9 +1352,9 @@ void halve_it()
             }
 
             // Patch lea offset if this is the first instruction in a (a1)+/(a1) block
-            if ((out_potential->ea = EA_MOVE_A1_POST || out_potential->ea == EA_A1_POST) 
+            if ((out_potential->ea == EA_MOVE_A1_POST || out_potential->ea == EA_A1_POST) 
                 && out_potential->screen_offset != 0 /* Guard against first instruction */
-                && out_potential->screen_offset != -1)
+                )
             {
                 if (lea_patch_address != 0)
                 {
@@ -1346,6 +1364,9 @@ void halve_it()
             }
 
         }
+
+        // Final touch - RTS
+        *write_code++ = RTS;
 
         // Now that we know the offset which the sprite data will be written,
         // let's fill in that lea gap we left at the beginning.
