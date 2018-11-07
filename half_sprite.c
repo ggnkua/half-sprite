@@ -1238,7 +1238,7 @@ void halve_it()
             }
 
             // Emit a SWAP if required
-            if (((out_potential->base_instruction & 0xffc0) == MOVED_W || (out_potential->base_instruction & 0xf1ff) == ORD_W || (out_potential->base_instruction & 0xffc0) == ANDI_W) && out_potential->value & EMIT_SWAP)
+            if (((out_potential->base_instruction & 0xffc0) == MOVED_W || (out_potential->base_instruction & 0xf1ff) == ORD_W || (out_potential->base_instruction & 0xf1ff) == ANDD_W) && out_potential->value & EMIT_SWAP)
             {
                 if (out_potential->base_instruction == MOVED_W)
                 {
