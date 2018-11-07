@@ -402,99 +402,107 @@ void halve_it()
         // Step 1: determine what actions we need to perform
         //         in order to draw the sprite on screen
         uint16_t plane_counter = 0;
-        for (i = BUFFER_SIZE / 2 - 1; i >= 0; i--)
+        short x, y;
+        for (y = 0; y < sprite_height; y++)
         {
-            // If we don't have to mask any bit, then skip all bitplanes
-            if (val_and == 0xffff)
+            for (x = 0; x < (sprite_width / 16)*screen_planes; x = x + 1)
             {
-                goto skipword;
-            }
 
-            val_or = *buf;
-
-            if (val_or == 0)
-            {
-                // Okay, we don't have to OR anything, but perhaps we need to apply the mask
-                if (generate_mask)
+                // If we don't have to mask any bit, then skip all bitplanes
+                if (val_and == 0xffff)
                 {
-                    if (val_and && plane_counter < num_mask_planes)
+                    goto skipword;
+                }
+
+                val_or = *buf;
+
+                if (val_or == 0)
+                {
+                    // Okay, we don't have to OR anything, but perhaps we need to apply the mask
+                    if (generate_mask)
                     {
-                        // Even if we don't have to OR something, we still have to AND the mask
-                        cur_mark->action = A_AND;
+                        if (val_and && plane_counter < num_mask_planes)
+                        {
+                            // Even if we don't have to OR something, we still have to AND the mask
+                            cur_mark->action = A_AND;
+                            cur_mark->offset = off;
+                            cur_mark->value_or = 0;
+                            cur_mark->value_and = val_and;
+                            cur_mark++;
+                            num_actions++;
+                        }
+                    }
+                    if (val_and == 0)
+                    {
+                        // Special case where we just need to mask something
+                        // because the user supplied their own mask
+                        // TODO this could happen if we outlined the mask I guess?
+                        cur_mark->action = A_MOVE;
                         cur_mark->offset = off;
                         cur_mark->value_or = 0;
                         cur_mark->value_and = val_and;
                         cur_mark++;
                         num_actions++;
+                        goto skipword;
                     }
                     // Nothing to draw here, skip word
                     goto skipword;
                 }
-                if (val_and == 0)
+
+                // We have something to do, let's determine what
+                cur_mark->offset = off;
+                cur_mark->value_or = val_or;
+
+                if (use_masking)
                 {
-                    // Special case where we just need to mask something
-                    // because the user supplied their own mask
-                    // TODO this could happen if we outlined the mask I guess?
-                    for (j = 0; j < num_mask_planes; j++)
+                    if (val_and == 0)
                     {
-                        cur_mark->action = A_AND;
-                        cur_mark->offset = off + j * 2;
-                        cur_mark->value_or = 0;
-                        cur_mark->value_and = val_and;
-                        cur_mark++;
-                        num_actions++;
+                        // All pixels in this word have to be punctured.
+                        // (i.e. andi.w #0,(a1) / or.w #xxxx,(a1)
+                        // A "move" instruction will suffice 
+                        cur_mark->action = A_MOVE;
+                        cur_mark->value_and = 0;
                     }
-                    goto skipword;
-                }
-            }
-
-            // We have something to do, let's determine what
-            cur_mark->offset = off;
-            cur_mark->value_or = val_or;
-
-            if (use_masking)
-            {
-                if (val_and == 0)
-                {
-                    // All pixels in this word have to be punctured.
-                    // (i.e. andi.w #0,(a1) / or.w #xxxx,(a1)
-                    // A "move" instruction will suffice 
-                    cur_mark->action = A_MOVE;
-                    cur_mark->value_and = 0;
-                }
-                else if ((val_or | val_and) == 0xffff)
-                {
-                    // Special case where mask and sprite data fill all the bits in a word.
-                    // We only need to OR in this case. Kudos to Leonard of Oxygene for the idea.
-                    cur_mark->action = A_OR;
-                    cur_mark->value_and = 0;
+                    else if ((val_or | val_and) == 0xffff)
+                    {
+                        // Special case where mask and sprite data fill all the bits in a word.
+                        // We only need to OR in this case. Kudos to Leonard of Oxygene for the idea.
+                        cur_mark->action = A_OR;
+                        cur_mark->value_and = 0;
+                    }
+                    else
+                    {
+                        // Generic case - we need to AND the mask and OR the sprite value
+                        cur_mark->action = A_AND_OR;
+                        cur_mark->value_and = val_and;
+                    }
                 }
                 else
                 {
-                    // Generic case - we need to AND the mask and OR the sprite value
-                    cur_mark->action = A_AND_OR;
-                    cur_mark->value_and = val_and;
+                    // We won't mask anything, so just OR things
+                    cur_mark->action = A_OR;
+                    cur_mark->value_and = 0;
+                }
+                num_actions++;
+                cur_mark++;
+
+            skipword:
+                off = off + 2;
+                buf++;
+                plane_counter++;
+                if (plane_counter == screen_planes)
+                {
+                    mask++;
+                    val_and = *mask;
+                    plane_counter = 0;
                 }
             }
-            else
-            {
-                // We won't mask anything, so just OR things
-                cur_mark->action = A_OR;
-                cur_mark->value_and = 0;
-            }
-            num_actions++;
-            cur_mark++;
+            off = off + ((screen_width - sprite_width) / 8)*screen_planes;
+            mask = mask + ((screen_width - sprite_width) / 16);
+            buf = buf + (screen_planes*(screen_width - sprite_width) / 16);
+            val_and = *mask;
+            plane_counter = 0;
 
-        skipword:
-            off = off + 2;
-            buf++;
-            plane_counter++;
-            if (plane_counter == screen_planes)
-            {
-                mask++;
-                val_and = *mask;
-                plane_counter = 0;
-            }
         }
 
         // Step 2: Try to optimise the actions recorded in step 1
@@ -1217,24 +1225,9 @@ void halve_it()
             // Emit the movem to load data registers when we reach the point where we need it
             if (out_potential == cacheable_code)
             {
-                // TODO: add the opcode emission
-                // TODO: add the opcode emission
-                // TODO: add the opcode emission
-                // TODO: add the opcode emission
-                // TODO: add the opcode emission
-                // TODO: add the opcode emission
-                // TODO: add the opcode emission
-                // TODO: add the opcode emission
-                // TODO: fix the register count
-                // TODO: fix the register count
-                // TODO: fix the register count
-                // TODO: fix the register count
-                // TODO: fix the register count
-                // TODO: fix the register count
-                // TODO: fix the register count
-                // TODO: fix the register count
-                // TODO: fix the register count
-                dprintf("movem.l (a0)+,d0-d7\n");
+                *write_code++ = MOVEM_L_TO_REG >> 16; // movem.l (a0)+,register_list
+                *write_code++ = (1 << (num_freqs >> 1)) - 1;
+                dprintf("movem.l (a0)+,d0-d%i\n", num_freqs >> 1);
             }
 
             // Emit a SWAP if required
@@ -1307,6 +1300,24 @@ void halve_it()
                 else if ((out_potential->base_instruction & 0xf1ff) == ORD_W)
                 {
                     printf("or.w d%i,", (out_potential->base_instruction >> 9) & 7);
+                }
+                else if ((out_potential->base_instruction & 0xffff0000) == MOVEM_L_TO_REG)
+                {
+                    // TODO: fill me
+                }
+                else if ((out_potential->base_instruction & 0xffff0000) == MOVEM_L_FROM_REG)
+                {
+                    // TODO: fill me
+                }
+                else if ((out_potential->base_instruction & 0xffff0000) == MOVEM_W_TO_REG)
+                {
+                    // TODO: insert code to count bits to determine number of registers
+                    printf("movem.w (a0)+,d0-d%i\n",4);
+                }
+                else if ((out_potential->base_instruction & 0xffff0000) == MOVEM_W_FROM_REG)
+                {
+                    // TODO: insert code to count bits to determine number of registers
+                    printf("movem.w d0-d%i,",4);
                 }
                 else
                 {
