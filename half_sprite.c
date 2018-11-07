@@ -1042,7 +1042,7 @@ void halve_it()
                             // We need to emit SWAP, so place a mark at the upper 16 bits (which are unused)
                             dprintf("swap d%i\n", i >> 1);
                             out_potential->value |= EMIT_SWAP;
-                            swaptable[i >> 1] = 0;
+                            swaptable[i >> 1] = 1;
                         }
 
                     }
