@@ -866,13 +866,14 @@ void halve_it()
         // TODO: Hmmm, since a2-a6 aren't going to be used by and/or then we could use them for move.w
         
         dprintf("\nmove.w\n------\n");
+        cur_mark = mark_buf;
         for (i = num_actions - 1; i >= 0; i--)
         {
             if (cur_mark->action == A_MOVE)
             {
                 dprintf("move.w #$%04x,$%04x(a1)\n", cur_mark->value_or, cur_mark->offset);
                 // Let's not mark the actions as done yet, the values could be used in the frequency table
-                //cur_mark->action = A_DONE;
+                cur_mark->action = A_DONE;
                 out_potential->base_instruction = MOVEI_W;  // move.w #xxx,
                 out_potential->ea = EA_MOVE_D_A1;                  // d(a1)
                 out_potential->screen_offset = cur_mark->offset;
@@ -1213,18 +1214,42 @@ void halve_it()
 
         for (out_potential = potential; out_potential < potential_end; out_potential++)
         {
+            // Emit the movem to load data registers when we reach the point where we need it
+            if (out_potential == cacheable_code)
+            {
+                // TODO: add the opcode emission
+                // TODO: add the opcode emission
+                // TODO: add the opcode emission
+                // TODO: add the opcode emission
+                // TODO: add the opcode emission
+                // TODO: add the opcode emission
+                // TODO: add the opcode emission
+                // TODO: add the opcode emission
+                // TODO: fix the register count
+                // TODO: fix the register count
+                // TODO: fix the register count
+                // TODO: fix the register count
+                // TODO: fix the register count
+                // TODO: fix the register count
+                // TODO: fix the register count
+                // TODO: fix the register count
+                // TODO: fix the register count
+                dprintf("movem.l (a0)+,d0-d7\n");
+            }
+
             // Emit a SWAP if required
             if (((out_potential->base_instruction & 0xffc0) == MOVED_W || (out_potential->base_instruction & 0xf1ff) == ORD_W || (out_potential->base_instruction & 0xffc0) == ANDI_W) && out_potential->value & EMIT_SWAP)
             {
                 if (out_potential->base_instruction == MOVED_W)
                 {
                     *write_code++ = SWAP | (out_potential->base_instruction & 7);
+                    dprintf("swap D%i\n", out_potential->base_instruction & 7);
                 }
                 else
                 {
                     *write_code++ = SWAP | ((out_potential->base_instruction >> 9) & 7);
+                    dprintf("swap D%i\n", ((out_potential->base_instruction >> 9) & 7));
                 }
-                dprintf("swap D%i\n", out_potential->base_instruction & 7);
             }
 
             // Emit extra lea if needed - last instruction in a (a1)+/(a1) block should be (a1)
@@ -1277,11 +1302,11 @@ void halve_it()
                 }
                 else if ((out_potential->base_instruction & 0xf1ff) == ANDD_W)
                 {
-                    printf("and.w d%i,", out_potential->base_instruction & 7);
+                    printf("and.w d%i,", (out_potential->base_instruction >> 9) & 7);
                 }
                 else if ((out_potential->base_instruction & 0xf1ff) == ORD_W)
                 {
-                    printf("or.w d%i,", out_potential->base_instruction & 7);
+                    printf("or.w d%i,", (out_potential->base_instruction >> 9) & 7);
                 }
                 else
                 {
@@ -1367,6 +1392,7 @@ void halve_it()
 
         // Final touch - RTS
         *write_code++ = RTS;
+        dprintf("rts\n");
 
         // Now that we know the offset which the sprite data will be written,
         // let's fill in that lea gap we left at the beginning.
@@ -1455,7 +1481,7 @@ int main(int argc, char ** argv)
     // Let's say we load a .pi1 file
     FILE *sprite = fopen("sprite.pi1","r");
     assert(sprite);
-    fseek(sprite, 32, 0);
+    fseek(sprite, 34, 0);
     fread(buf_origsprite, BUFFER_SIZE, 1, sprite);
     fclose(sprite);
 
