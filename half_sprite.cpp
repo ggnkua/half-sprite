@@ -67,6 +67,20 @@
 #define cprintf(...)
 #endif
 
+// Set up a namespace for our typedefs (dml wisdom)
+
+namespace brown
+{
+    typedef int S32;
+    typedef short S16;
+    typedef char S8;
+    typedef unsigned int U32;
+    typedef unsigned short U16;
+    typedef unsigned char U8;
+}
+
+using namespace brown;
+
 // Yes, let's define max because it's a complex internal function O_o
 #define max(a,b) ( a > b ? a : b )
 
@@ -104,13 +118,7 @@
 
 #define EMIT_SWAP       0x10000
 
-#ifndef _MSC_VER
-#define ACTIONTYPE : uint16_t
-#else
-#define ACTIONTYPE
-#endif
-
-typedef enum _ACTIONS ACTIONTYPE
+typedef enum _ACTIONS : U16
 {
     // Actions, i.e. what instructions should we emit per case.
     // Initially every individual .w write in screen is marked,
@@ -131,16 +139,16 @@ typedef struct _MARK
     // The struct we use for the initial scan, this will mark down the
     // maximum words that need to be changed in order to mask and draw the sprite
     ACTIONS action;
-    uint32_t offset;
-    uint16_t value_or;
-    uint16_t value_and;
+    U32 offset;
+    U16 value_or;
+    U16 value_and;
 } MARK;
 
 typedef struct _FREQ
 {
     // Just a table that will be used to sort immediate values by frequency
-    uint16_t value;
-    uint16_t count;
+    U16 value;
+    U16 count;
 } FREQ;
 
 // TODO not very satisfied with this - we're taking data from one structure (MARK) and move it to another. Perhaps this struct could be merged with MARK? (Of course then it will slow down the qsort as it'll need to shift more data around)
@@ -148,23 +156,23 @@ typedef struct _POTENTIAL_CODE
 {
     // A second struct that marks down the potential instructions to be generated.
     // The instructions might change along the way so we'll try to keep it flexible
-    uint32_t base_instruction;  // The instruction to be emitted
-    uint16_t ea;                // And its effective address encoding
-    uint32_t screen_offset;
-    uint32_t value;
-    uint16_t bytes_affected;    // How many bytes the instruction will affect (used for (a1)+ optimisations near the end)
+    U32 base_instruction;  // The instruction to be emitted
+    U16 ea;                // And its effective address encoding
+    U32 screen_offset;
+    U32 value;
+    U16 bytes_affected;    // How many bytes the instruction will affect (used for (a1)+ optimisations near the end)
 } POTENTIAL_CODE;
 
 // TODO: Hardcoded tables everywhere! That's not so great!
 
-uint8_t buf_origsprite[BUFFER_SIZE];    // This is where we load our original sprite data
-uint8_t buf_mask[BUFFER_SIZE / 4];      // Buffer used for creating the mask
-uint8_t buf_shift[BUFFER_SIZE];         // Buffer used to create the shifted sprite (this is the buffer which we'll do most of the work)
+U8 buf_origsprite[BUFFER_SIZE];    // This is where we load our original sprite data
+U8 buf_mask[BUFFER_SIZE / 4];      // Buffer used for creating the mask
+U8 buf_shift[BUFFER_SIZE];         // Buffer used to create the shifted sprite (this is the buffer which we'll do most of the work)
 MARK mark_buf[32000];                   // Buffer that flags the actions to be taken in order to draw the sprite
 FREQ freqtab[8000];                     // Frequency table for the values we're going to process
 POTENTIAL_CODE potential[16384];        // What we'll most probably output, bar a few optimisations
-uint16_t output_buf[65536];             // Where the output code will be stored
-uint16_t sprite_data[16384];            // The sprite data we're going to read when we want to draw the frames. Temporary buffer as this data will be stored immediately after the generated code
+U16 output_buf[65536];             // Where the output code will be stored
+U16 sprite_data[16384];            // The sprite data we're going to read when we want to draw the frames. Temporary buffer as this data will be stored immediately after the generated code
 
 // Code for qsort obtained from https://code.google.com/p/propgcc/source/browse/lib/stdlib/qsort.c
 
@@ -259,7 +267,7 @@ void halve_it()
     int horizontal_clip = 1;            // Should we output code that enables horizontal clip for x<0 and x>screen_width-sprite_width? (this can lead to HUGE amounts of outputted code depending on sprite width!)
     short i, j, k;
     short loop_count;
-    uint16_t *write_code = output_buf;
+    U16 *write_code = output_buf;
 
     memcpy(buf_shift, buf_origsprite, BUFFER_SIZE);
 
@@ -268,7 +276,7 @@ void halve_it()
     if (sprite_width == -1 || sprite_height == -1)
     {
         short x, y;
-        uint16_t *scan_screen = (uint16_t *)buf_origsprite;
+        U16 *scan_screen = (U16 *)buf_origsprite;
         loop_count = screen_height - 1;
         y = 0;
         do
@@ -279,7 +287,7 @@ void halve_it()
             //       scan from the corresponding word for subsequent scanlines
             for (x = 0; x < screen_width; x = x + 16)
             {
-                uint16_t temp_word = 0;
+                U16 temp_word = 0;
                 for (i = 0; i < screen_planes; i++)
                 {
                     temp_word = temp_word | *scan_screen;
@@ -313,14 +321,14 @@ void halve_it()
     {
         if (generate_mask)
         {
-            uint16_t *src = (uint16_t *)buf_origsprite;
-            uint16_t *mask = (uint16_t *)buf_mask;
-            uint16_t x, y;
+            U16 *src = (U16 *)buf_origsprite;
+            U16 *mask = (U16 *)buf_mask;
+            U16 x, y;
             for (y = 0; y < sprite_height; y++)
             {
                 for (x = 0; x < sprite_width; x=x+16)
                 {
-                    uint16_t gather_planes = 0;
+                    U16 gather_planes = 0;
                     for (j = 0; j < num_mask_planes; j++)
                     {
                         // Only gather as many planes as our sprite actually is
@@ -336,8 +344,8 @@ void halve_it()
             if (outline_mask)
             {
                 // Add outlining of the mask
-                mask = (uint16_t *)buf_mask;
-                uint16_t *mask2 = mask + (screen_width / 16);
+                mask = (U16 *)buf_mask;
+                U16 *mask2 = mask + (screen_width / 16);
                 // OR the mask upwards
                 for (i = 0; i < screen_width*(screen_height - 1) / (8/sprite_planes) / 2; i++)
                 {
@@ -346,7 +354,7 @@ void halve_it()
                     mask2++;
                 }
                 // OR the mask downwards
-                mask = (uint16_t *)buf_mask + (screen_width*(screen_height) / 16);
+                mask = (U16 *)buf_mask + (screen_width*(screen_height) / 16);
                 mask2 = mask - (screen_width / 16);
                 for (i = 0; i < screen_width*(screen_height - 1) / 16; i++)
                 {
@@ -355,12 +363,12 @@ void halve_it()
                     *mask |= *mask2;
                 }
                 // OR the mask left and right
-                mask = (uint16_t *)buf_mask;
+                mask = (U16 *)buf_mask;
                 *mask = (*mask<<1) | (mask[1] >> 15);
                 mask++;
                 for (i = 1;i < screen_width*(screen_height - 1) / 16 - 1;i++)
                 {
-                    uint16_t tmp_mask = *mask;
+                    U16 tmp_mask = *mask;
                     *mask = tmp_mask | (tmp_mask << 1) | (tmp_mask >> 1) | (mask[-1] << 15) | (mask[1] >> 15);
                     mask++;
                 }
@@ -380,7 +388,7 @@ void halve_it()
     // We'll need 16 .l pointers for the preshifts + sprite_width*2 when clipping horizontally
     // (we'll shift the sprite sprite_width times left and as many to the right, for clipping)
 
-    uint32_t *write_pointers = (uint32_t *)write_code;
+    U32 *write_pointers = (U32 *)write_code;
     if (horizontal_clip)
     {
         write_code = write_code + (16 + sprite_width * 2) * 2;
@@ -423,18 +431,18 @@ void halve_it()
         int off = 0;
         num_actions = 0;
         MARK *cur_mark = mark_buf;
-        uint16_t *buf = (uint16_t *)buf_shift;
-        uint16_t *mask = (uint16_t *)buf_mask;
-        uint16_t val_and = *mask;
-        uint16_t val_or;
+        U16 *buf = (U16 *)buf_shift;
+        U16 *mask = (U16 *)buf_mask;
+        U16 val_and = *mask;
+        U16 val_or;
         
         out_potential = potential;                      // Reset potential moves pointer
         *write_pointers++ = write_code - output_buf;    // Mark down the entry point for this routine
-        uint16_t *write_sprite_data = sprite_data;
+        U16 *write_sprite_data = sprite_data;
 
         // Step 1: determine what actions we need to perform
         //         in order to draw the sprite on screen
-        uint16_t plane_counter = 0;
+        U16 plane_counter = 0;
         short x, y;
         for (y = 0; y < sprite_height; y++)
         {
@@ -551,8 +559,8 @@ void halve_it()
         MARK *marks_end = cur_mark;           // Save end of marks buffer
         cur_mark = mark_buf;
         MARK *temp_mark;
-        uint16_t temp_off_first;
-        uint16_t temp_off_second;
+        U16 temp_off_first;
+        U16 temp_off_second;
         for (i = num_actions - 1; i >= 0; i--)
         {
             if (cur_mark->action == A_MOVE)
@@ -592,7 +600,7 @@ void halve_it()
                     // Assuming that registers d0-d7 and a2-a6 are free to clobber
                     num_moves = num_moves >> 1;
                     out_potential->base_instruction = MOVEM_L_TO_REG; // movem.l (a0)+,register_list
-                    uint16_t register_mask;
+                    U16 register_mask;
                     if (num_moves <= 8)
                     {
                         // Just data registers
@@ -685,7 +693,7 @@ void halve_it()
                     // We need to emit 2 pairs of movem.ws: one to read the data from RAM and one to write it back to screen buffer.
                     // Assuming that registers d0-d7 and a2-a6 are free to clobber
                     out_potential->base_instruction = MOVEM_W_TO_REG; // movem.w (a0)+,register_list
-                    uint16_t register_mask;
+                    U16 register_mask;
                     // TODO: this is probably a redundant check if only 3 to 5 movem.ws are ever used
                     if (num_moves <= 8)
                     {
@@ -723,7 +731,7 @@ void halve_it()
             {
                 if (cur_mark[1].action == A_MOVE && cur_mark[1].offset-cur_mark->offset==2)
                 {
-                    uint32_t longval;
+                    U32 longval;
                     longval = (cur_mark->value_or << 16) | cur_mark[1].value_or;
                     dprintf("move.w #$%04x,$%04x(a1) - move.w #$%04x,$%04x(a1) -> move.l #$%08x,$%04x(a1)\n", cur_mark->value_or, cur_mark->offset, cur_mark[1].value_or, cur_mark[1].offset, longval, cur_mark->offset);
                     // TODO: Is there a way we can include a longword into the frequency table without massive amounts of pain?
@@ -781,7 +789,7 @@ void halve_it()
                         ((cur_mark[2].value_or & 0xff00) == 0) &&
                         ((cur_mark[3].value_or & 0xff00) == 0))
                     {
-                        uint32_t longval;
+                        U32 longval;
                         longval = ((cur_mark->value_or << 16) & 0xff000000) | ((cur_mark[1].value_or << 16) & 0x00ff0000) | ((cur_mark[2].value_or >> 8) & 0x0000ff00) | (cur_mark[3].value_or & 0x000000ff);
                         longval = (cur_mark->value_or << 16) | cur_mark[1].value_or;
                         dprintf(";movep case - crack out the champage, woohoo!\nmove.l #%i,d0 - movep.l d0,1(a0)\n", longval);
@@ -811,7 +819,7 @@ void halve_it()
         // We can combine those into and.l/or.l pair
         
         dprintf("\nandi.l/ori.l pair optimisations\n-------------------------------\n");
-        uint16_t mark_to_search_for = A_AND_OR;
+        U16 mark_to_search_for = A_AND_OR;
         if (!use_masking)
         {
             // We were asked not to gerenarte mask code so we're searching for 2 consecutive ORs
@@ -936,7 +944,7 @@ void halve_it()
             // Only proceed if we haven't processed the current action yet
             if (cur_mark->action != A_DONE)
             {
-                uint16_t value = cur_mark->value_or;
+                U16 value = cur_mark->value_or;
                 int num_iters = 1;      // Run loop twice, one for OR value and one for AND
                 if (!generate_mask)
                 {
@@ -983,11 +991,11 @@ void halve_it()
         {
             num_freqs = 15;
         }
-        uint16_t *cached_values = write_sprite_data;
+        U16 *cached_values = write_sprite_data;
         dprintf("\nMost frequent values\n--------------------\n");
         // Keep highest frequency values in low words of registers,
         // since it will probably result in fewer SWAP emissions
-        uint16_t *write_arranged_values = write_sprite_data + 1;
+        U16 *write_arranged_values = write_sprite_data + 1;
         for (i = num_freqs; i >= 0; i--)
         {
             freqptr--;
@@ -1018,7 +1026,7 @@ void halve_it()
         loop_count = num_actions - 1;
         do
         {
-            uint16_t cur_action = cur_mark->action;
+            U16 cur_action = cur_mark->action;
             if (cur_action & (A_AND_OR | A_AND | A_OR))
             {
                 if (use_masking && cur_action & (A_AND | A_AND_OR))
@@ -1063,10 +1071,10 @@ void halve_it()
 
         dprintf("\nData register optimisations\n---------------------------\n");
         POTENTIAL_CODE *potential_end = out_potential;
-        uint16_t swaptable[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };                 // SWAP state of registers
+        U16 swaptable[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };                 // SWAP state of registers
         for (out_potential = cacheable_code; out_potential < potential_end; out_potential++)
         {
-            uint16_t cur_value = out_potential->value;
+            U16 cur_value = out_potential->value;
             for (i = 0; i < num_freqs; i++)
             {
                 if (cur_value == cached_values[i])
@@ -1154,8 +1162,8 @@ void halve_it()
         // Hey, it's the movem.l case once again :)
 
         dprintf("\nPost increment optimisations\n----------------------------\n");
-        uint32_t prev_offset = potential->screen_offset;
-        uint16_t distance_between_actions = potential->bytes_affected;
+        U32 prev_offset = potential->screen_offset;
+        U16 distance_between_actions = potential->bytes_affected;
         short consecutive_instructions = 0;
         
         // NOTE: we're going to scan one entry past the end of the table in order to catch that
@@ -1238,9 +1246,9 @@ void halve_it()
 
         // Finally, emit the damn code!
         
-        //uint16_t screen_offset = 0;
-        uint16_t *lea_patch_address = 0;
-        uint16_t lea_offset = 0;
+        //U16 screen_offset = 0;
+        U16 *lea_patch_address = 0;
+        U16 lea_offset = 0;
         dprintf("\n\nFinal code:\n-----------\n");
         cprintf("sprite_code_shift_%i:\n", shift);
 
@@ -1250,7 +1258,7 @@ void halve_it()
         // (geez, lots of assumptions)
         cprintf("lea sprite_data_shift_%i(pc),a0\n", shift);
         *write_code++ = LEA_PC_A0;
-        uint16_t *first_lea_offset = write_code;
+        U16 *first_lea_offset = write_code;
         write_code++;
 
         for (out_potential = potential; out_potential < potential_end; out_potential++)
@@ -1336,8 +1344,8 @@ void halve_it()
                 }
                 else if ((out_potential->base_instruction & 0xffff0000) == MOVEM_L_TO_REG)
                 {
-                    uint32_t c;
-                    uint32_t v = out_potential->base_instruction & 0xffff;
+                    U32 c;
+                    U32 v = out_potential->base_instruction & 0xffff;
                     v = v - ((v >> 1) & 0x55555555);                    // reuse input as temporary
                     v = (v & 0x33333333) + ((v >> 2) & 0x33333333);     // temp
                     c = ((v + (v >> 4) & 0xF0F0F0F) * 0x1010101) >> 24; // count
@@ -1345,8 +1353,8 @@ void halve_it()
                 }
                 else if ((out_potential->base_instruction & 0xffff0000) == MOVEM_L_FROM_REG)
                 {
-                    uint32_t c;
-                    uint32_t v = out_potential->base_instruction & 0xffff;
+                    U32 c;
+                    U32 v = out_potential->base_instruction & 0xffff;
                     v = v - ((v >> 1) & 0x55555555);                    // reuse input as temporary
                     v = (v & 0x33333333) + ((v >> 2) & 0x33333333);     // temp
                     c = ((v + (v >> 4) & 0xF0F0F0F) * 0x1010101) >> 24; // count
@@ -1354,8 +1362,8 @@ void halve_it()
                 }
                 else if ((out_potential->base_instruction & 0xffff0000) == MOVEM_W_TO_REG)
                 {
-                    uint32_t c;
-                    uint32_t v = out_potential->base_instruction & 0xffff;
+                    U32 c;
+                    U32 v = out_potential->base_instruction & 0xffff;
                     v = v - ((v >> 1) & 0x55555555);                    // reuse input as temporary
                     v = (v & 0x33333333) + ((v >> 2) & 0x33333333);     // temp
                     c = ((v + (v >> 4) & 0xF0F0F0F) * 0x1010101) >> 24; // count
@@ -1363,8 +1371,8 @@ void halve_it()
                 }
                 else if ((out_potential->base_instruction & 0xffff0000) == MOVEM_W_FROM_REG)
                 {
-                    uint32_t c;
-                    uint32_t v = out_potential->base_instruction & 0xffff;
+                    U32 c;
+                    U32 v = out_potential->base_instruction & 0xffff;
                     v = v - ((v >> 1) & 0x55555555);                    // reuse input as temporary
                     v = (v & 0x33333333) + ((v >> 2) & 0x33333333);     // temp
                     c = ((v + (v >> 4) & 0xF0F0F0F) * 0x1010101) >> 24; // count
@@ -1385,7 +1393,7 @@ void halve_it()
             case ANDI_W:
             case ORI_W:
                 // Output .w immediate value
-                *write_code++ = (uint16_t)out_potential->value;
+                *write_code++ = (U16)out_potential->value;
                 cprintf("#$%04x,", out_potential->value);
                 break;
 
@@ -1393,8 +1401,8 @@ void halve_it()
             case ANDI_L:
             case ORI_L:
                 // Output .l immediate value
-                *write_code++ = (uint16_t)(out_potential->value >> 16);
-                *write_code++ = (uint16_t)(out_potential->value);
+                *write_code++ = (U16)(out_potential->value >> 16);
+                *write_code++ = (U16)(out_potential->value);
                 cprintf("#$%04x,", out_potential->value);
                 break;
 
@@ -1405,7 +1413,7 @@ void halve_it()
             // Write screen offsets if needed
             //if (((out_potential->base_instruction) & 0xffff0000) == MOVEM_L_FROM_REG || (out_potential->base_instruction & 0xffff0000) == MOVEM_W_FROM_REG)
             //{
-            //    *write_code++ = (uint16_t)out_potential->screen_offset - lea_offset;
+            //    *write_code++ = (U16)out_potential->screen_offset - lea_offset;
             //    cprintf("$%04x(a1)\n", out_potential->screen_offset - lea_offset);
             //}
 
@@ -1413,7 +1421,7 @@ void halve_it()
             {
             case EA_D_A1:
             case EA_MOVE_D_A1:
-                *write_code++ = (uint16_t)out_potential->screen_offset - lea_offset;
+                *write_code++ = (U16)out_potential->screen_offset - lea_offset;
                 cprintf("$%04x(a1)\n", out_potential->screen_offset - lea_offset);
                 break;
 
@@ -1462,7 +1470,7 @@ void halve_it()
 
         // Glue the sprite_data buffer immediately after the code
         
-        uint16_t *read_sprite_data=sprite_data;
+        U16 *read_sprite_data=sprite_data;
 #ifdef PRINT_CODE
         printf("sprite_data_shift_%i:\ndc.w ", shift);
         j = 0;
@@ -1509,13 +1517,13 @@ void halve_it()
 
         // Shift screen by one place right
         // Where's 68000's roxl when you need it, right?
-        buf = (uint16_t *)buf_shift;
+        buf = (U16 *)buf_shift;
         short screen_plane_words = screen_width / 16;
         for (y = 0;y < screen_height;y++)
         {
             for (plane_counter = 0; plane_counter < screen_planes; plane_counter++)
             {
-                uint16_t *line_buf = buf + (screen_plane_words - 1)*screen_planes + plane_counter;
+                U16 *line_buf = buf + (screen_plane_words - 1)*screen_planes + plane_counter;
                 for (x = 0; x < screen_width / 16 - 1; x++)
                 {
                     *line_buf = ((line_buf[-screen_plane_words] & 1) << 15) | (*line_buf >> 1);
@@ -1527,10 +1535,10 @@ void halve_it()
         }
 
         // Shift mask by one place right
-        mask = (uint16_t *)buf_mask;
+        mask = (U16 *)buf_mask;
         for (y = 0;y < screen_height;y++)
         {
-            uint16_t *line_mask = mask + (screen_plane_words - 1);
+            U16 *line_mask = mask + (screen_plane_words - 1);
             for (x = 0; x < screen_width / 16 - 1; x++)
             {
                 *line_mask = ((line_mask[-1] & 1) << 15) | (*line_mask >> 1);
@@ -1547,8 +1555,8 @@ typedef struct _endianess
 {
     union
     {
-        uint8_t little;
-        uint16_t big;
+        U8 little;
+        U16 big;
     };
 } endianness;
 
@@ -1568,7 +1576,7 @@ int main(int argc, char ** argv)
     if (endian.little)
     {
         int i;
-        uint16_t *buf = (uint16_t *)buf_origsprite;
+        U16 *buf = (U16 *)buf_origsprite;
         for (i = 0;i < BUFFER_SIZE / 2;i++)
         {
             *buf = (*buf >> 8) | (*buf << 8);
