@@ -473,7 +473,7 @@ void halve_it()
                             num_actions++;
                         }
                     }
-                    if (val_and == 0)
+                    if (val_and)
                     {
                         // Special case where we just need to mask something
                         // because the user supplied their own mask
