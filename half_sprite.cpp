@@ -585,7 +585,14 @@ void halve_it()
                     // 6 move.w = 3 move.l, and from 3 move.l onwards it's more optimal to go movem.l
                     num_moves = num_moves & -2;                         // Even out the number as we can't move half a longword!
                     out_potential[1].screen_offset = cur_mark->offset;  // Save screen offset for the second movem
-                    dprintf("movem.l (a0)+,d0-d%i\nmovem.l d0-d%i,$%04x(a1)\ndc.w ", num_moves - 1, num_moves - 1, cur_mark->offset);
+                    if (num_moves <= 8)
+                    {
+                        dprintf("movem.l (a0)+,d0-d%i\nmovem.l d0-d%i,$%04x(a1)\ndc.w ", num_moves - 1, num_moves - 1, cur_mark->offset);
+                    }
+                    else
+                    {
+                        dprintf("movem.l (a0)+,d0-d7/a2-a%i\nmovem.l d0-d7/a2-a%i,$%04x(a1)\ndc.w ", num_moves - 1 - 8 + 2, num_moves - 1 - 8 + 2, cur_mark->offset);
+                    }
                     for (j = num_moves - 1; j >= 0; j--)
                     {
                         *write_sprite_data++ = cur_mark->value_or;
@@ -608,8 +615,8 @@ void halve_it()
                     }
                     else
                     {
-                        // Data and address registers
-                        register_mask = 0xff | (((1 << (num_moves - 8)) - 1) << 10);
+                        // Data and address registers (address registers start at a2)
+                        register_mask = 0xff | (((1 << (num_moves - 8 + 2)) - 1) << 10);
                     }
                     out_potential->base_instruction |= register_mask;
                     out_potential->screen_offset = 0;       // No screen offset, this is a source read
@@ -944,13 +951,26 @@ void halve_it()
             // Only proceed if we haven't processed the current action yet
             if (cur_mark->action != A_DONE)
             {
-                U16 value = cur_mark->value_or;
-                int num_iters = 1;      // Run loop twice, one for OR value and one for AND
-                if (!generate_mask)
+                U16 value;
+                int num_iters = 0;      // In genreal we only need to iterate the loop below once
+                switch (cur_mark->action)
                 {
-                    // ...except if we don't generate mask code, in which case run loop only once
-                    // (all this stuff should compile to static code so it's not as bloated as you might think with all these ifs and variable for boundaries :))
-                    num_iters = 0;
+                case A_OR:
+                    value = cur_mark->value_or;
+                    break;
+                case A_AND:
+                    value = cur_mark->value_and;
+                    break;
+                case A_MOVE:
+                    value = cur_mark->value_or;
+                    break;
+                case A_AND_OR:
+                    num_iters = 1;      // Run loop twice, once for OR value and once for AND
+                    value = cur_mark->value_and;
+                    break;
+                default:
+                    dprintf("Creating frequency table: type %i wat", cur_mark->action);
+                    break;
                 }
                 for (j = num_iters; j >= 0; j--)
                 {
@@ -971,7 +991,8 @@ void halve_it()
                     freqptr->count = 1;
 
                 value_found:
-                    value = cur_mark->value_and;
+                    // If we run a second time, do the OR value
+                    value = cur_mark->value_or;
                 }
             }
             cur_mark++;
@@ -1349,7 +1370,18 @@ void halve_it()
                     v = v - ((v >> 1) & 0x55555555);                    // reuse input as temporary
                     v = (v & 0x33333333) + ((v >> 2) & 0x33333333);     // temp
                     c = ((v + (v >> 4) & 0xF0F0F0F) * 0x1010101) >> 24; // count
-                    printf("movem.l (a0)+,d0-d%i\n", c);
+                    if (c <= 8)
+                    {
+                        printf("movem.l (a0)+,d0-d%i\n", c);
+                    }
+                    else if (c == 9)
+                    {
+                        printf("movem.l (a0)+,d0-d7/a2\n");
+                    }
+                    else
+                    {
+                        printf("movem.l (a0)+,d0-d7/a2-%i\n", c - 8);
+                    }
                 }
                 else if ((out_potential->base_instruction & 0xffff0000) == MOVEM_L_FROM_REG)
                 {
@@ -1358,7 +1390,18 @@ void halve_it()
                     v = v - ((v >> 1) & 0x55555555);                    // reuse input as temporary
                     v = (v & 0x33333333) + ((v >> 2) & 0x33333333);     // temp
                     c = ((v + (v >> 4) & 0xF0F0F0F) * 0x1010101) >> 24; // count
-                    printf("movem.w d0-d%i,", c);
+                    if (c <= 8)
+                    {
+                        printf("movem.l d0-d7/a2-%i,", c);
+                    }
+                    else if (c == 9)
+                    {
+                        printf("movem.l d0-d7/a2,");
+                    }
+                    else
+                    {
+                        printf("movem.l d0-d7/a2-%i,", c - 8);
+                    }
                 }
                 else if ((out_potential->base_instruction & 0xffff0000) == MOVEM_W_TO_REG)
                 {
