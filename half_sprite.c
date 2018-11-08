@@ -61,6 +61,11 @@
 #else
 #define dprintf(...)
 #endif
+#ifdef PRINT_CODE
+#define cprintf(...) printf(__VA_ARGS__)
+#else
+#define cprintf(...)
+#endif
 
 // Yes, let's define max because it's a complex internal function O_o
 #define max(a,b) ( a > b ? a : b )
@@ -181,7 +186,7 @@ uint16_t sprite_data[16384];            // The sprite data we're going to read w
 
 // Tinkered by GGN to sort FREQ struct members by .count
 
-static inline void qsort(FREQ *base, size_t nmemb)
+void qsort(FREQ *base, size_t nmemb)
 {
     size_t a, b, c;
     while (nmemb > 1)
@@ -254,7 +259,6 @@ void halve_it()
     int horizontal_clip = 1;            // Should we output code that enables horizontal clip for x<0 and x>screen_width-sprite_width? (this can lead to HUGE amounts of outputted code depending on sprite width!)
     short i, j, k;
     short loop_count;
-    uint16_t *write_sprite_data = sprite_data;
     uint16_t *write_code = output_buf;
 
     memcpy(buf_shift, buf_origsprite, BUFFER_SIZE);
@@ -300,6 +304,8 @@ void halve_it()
     }
     // Increment width and height since our scanning is 0 based
     sprite_height++;
+    sprite_width = sprite_width + 16;
+    // Add one horizontal word to width to allow for shifting
     sprite_width = sprite_width + 16;
 
     // Prepare mask
@@ -368,7 +374,7 @@ void halve_it()
 
     int num_actions;
     int shift;
-    POTENTIAL_CODE *out_potential = potential;
+    POTENTIAL_CODE *out_potential;
 
     // Make space for a double pointer table at the beginning as an index to all routines
     // We'll need 16 .l pointers for the preshifts + sprite_width*2 when clipping horizontally
@@ -378,11 +384,36 @@ void halve_it()
     if (horizontal_clip)
     {
         write_code = write_code + (16 + sprite_width * 2) * 2;
+        cprintf("sprite_routines:\n");
+        cprintf("dc.l ");
+        for (i = 0;i < 15;i++)
+        {
+            cprintf("sprite_code_shift_%i,", i);
+        }
+        cprintf("sprite_code_shift_15\n");
+        cprintf("dc.l ");
+        for (i = 0;i < sprite_width;i++)
+        {
+            cprintf("sprite_code_clip_right_%i,", i);
+        }
+        cprintf("sprite_code_clip_right_%i\n", sprite_width);
+        cprintf("dc.l ");
+        for (i = 0;i < sprite_width;i++)
+        {
+            cprintf("sprite_code_clip_left_%i,", i);
+        }
+        cprintf("sprite_code_clip_left_%i\n", sprite_width);
     }
     else
     {
         // Just 16 preshifts then. 
         write_code = write_code + 16 * 2;
+        cprintf("dc.l ");
+        for (i = 0;i < 15;i++)
+        {
+            cprintf("sprite_code_shift_%i,", i);
+        }
+        cprintf("sprite_code_shift_15\n");
     }
 
     // Main - repeats 16 times for 16 preshifts
@@ -396,8 +427,10 @@ void halve_it()
         uint16_t *mask = (uint16_t *)buf_mask;
         uint16_t val_and = *mask;
         uint16_t val_or;
-
+        
+        out_potential = potential;                      // Reset potential moves pointer
         *write_pointers++ = write_code - output_buf;    // Mark down the entry point for this routine
+        uint16_t *write_sprite_data = sprite_data;
 
         // Step 1: determine what actions we need to perform
         //         in order to draw the sprite on screen
@@ -544,7 +577,7 @@ void halve_it()
                     // 6 move.w = 3 move.l, and from 3 move.l onwards it's more optimal to go movem.l
                     num_moves = num_moves & -2;                         // Even out the number as we can't move half a longword!
                     out_potential[1].screen_offset = cur_mark->offset;  // Save screen offset for the second movem
-                    dprintf("movem.l - ");
+                    dprintf("movem.l (a0)+,d0-d%i\nmovem.l d0-d%i,$%04x(a1)\ndc.w ", num_moves - 1, num_moves - 1, cur_mark->offset);
                     for (j = num_moves - 1; j >= 0; j--)
                     {
                         *write_sprite_data++ = cur_mark->value_or;
@@ -638,7 +671,7 @@ void halve_it()
                 if (num_moves >= 3)
                 {
                     out_potential[1].screen_offset = cur_mark->offset;  // Save screen offset for the second movem
-                    dprintf("movem.w - ");
+                    dprintf("movem.w (a0)+,d0-d%i\nmovem.w d0-d%i,$%04x(a1)\ndc.w ", num_moves - 1, num_moves - 1, cur_mark->offset);
                     for (j = num_moves - 1; j >= 0; j--)
                     {
                         dprintf("$%04x,", cur_mark->value_or);
@@ -1209,13 +1242,13 @@ void halve_it()
         uint16_t *lea_patch_address = 0;
         uint16_t lea_offset = 0;
         dprintf("\n\nFinal code:\n-----------\n");
-        dprintf("sprite_code_shift_%i:\n", shift);
+        cprintf("sprite_code_shift_%i:\n", shift);
 
         // We need to load a0 with the sprite data
         // Safe to assume that there will be data, hopefully!
         // Also, assuming that we won't dump more than 32k of code so the offset can be pc relative!
         // (geez, lots of assumptions)
-        dprintf("lea sprite_data_shift_%i(pc),a0\n", shift);
+        cprintf("lea sprite_data_shift_%i(pc),a0\n", shift);
         *write_code++ = LEA_PC_A0;
         uint16_t *first_lea_offset = write_code;
         write_code++;
@@ -1227,7 +1260,7 @@ void halve_it()
             {
                 *write_code++ = MOVEM_L_TO_REG >> 16; // movem.l (a0)+,register_list
                 *write_code++ = (1 << (num_freqs >> 1)) - 1;
-                dprintf("movem.l (a0)+,d0-d%i\n", num_freqs >> 1);
+                cprintf("movem.l (a0)+,d0-d%i\n", num_freqs >> 1);
             }
 
             // Emit a SWAP if required
@@ -1236,12 +1269,12 @@ void halve_it()
                 if (out_potential->base_instruction == MOVED_W)
                 {
                     *write_code++ = SWAP | (out_potential->base_instruction & 7);
-                    dprintf("swap D%i\n", out_potential->base_instruction & 7);
+                    cprintf("swap D%i\n", out_potential->base_instruction & 7);
                 }
                 else
                 {
                     *write_code++ = SWAP | ((out_potential->base_instruction >> 9) & 7);
-                    dprintf("swap D%i\n", ((out_potential->base_instruction >> 9) & 7));
+                    cprintf("swap D%i\n", ((out_potential->base_instruction >> 9) & 7));
                 }
             }
 
@@ -1256,12 +1289,12 @@ void halve_it()
                 // Punch a hole in the code to allow for the lea offset but don't fill it yet
                 *write_code++ = out_potential->screen_offset - lea_offset;
                 lea_offset = out_potential->screen_offset - lea_offset;
-                dprintf("lea %i(a1),a1\n", lea_offset);
+                cprintf("lea %i(a1),a1\n", lea_offset);
             }
 
             // Write opcode
             *write_code++ = out_potential->base_instruction | out_potential->ea;
-#ifdef PRINT_DEBUG
+#ifdef PRINT_CODE
             switch (out_potential->base_instruction)
             {
             case MOVEM_L_FROM_REG:
@@ -1303,21 +1336,39 @@ void halve_it()
                 }
                 else if ((out_potential->base_instruction & 0xffff0000) == MOVEM_L_TO_REG)
                 {
-                    // TODO: fill me
+                    uint32_t c;
+                    uint32_t v = out_potential->base_instruction & 0xffff;
+                    v = v - ((v >> 1) & 0x55555555);                    // reuse input as temporary
+                    v = (v & 0x33333333) + ((v >> 2) & 0x33333333);     // temp
+                    c = ((v + (v >> 4) & 0xF0F0F0F) * 0x1010101) >> 24; // count
+                    printf("movem.l (a0)+,d0-d%i\n", c);
                 }
                 else if ((out_potential->base_instruction & 0xffff0000) == MOVEM_L_FROM_REG)
                 {
-                    // TODO: fill me
+                    uint32_t c;
+                    uint32_t v = out_potential->base_instruction & 0xffff;
+                    v = v - ((v >> 1) & 0x55555555);                    // reuse input as temporary
+                    v = (v & 0x33333333) + ((v >> 2) & 0x33333333);     // temp
+                    c = ((v + (v >> 4) & 0xF0F0F0F) * 0x1010101) >> 24; // count
+                    printf("movem.w d0-d%i,", c);
                 }
                 else if ((out_potential->base_instruction & 0xffff0000) == MOVEM_W_TO_REG)
                 {
-                    // TODO: insert code to count bits to determine number of registers
-                    printf("movem.w (a0)+,d0-d%i\n",4);
+                    uint32_t c;
+                    uint32_t v = out_potential->base_instruction & 0xffff;
+                    v = v - ((v >> 1) & 0x55555555);                    // reuse input as temporary
+                    v = (v & 0x33333333) + ((v >> 2) & 0x33333333);     // temp
+                    c = ((v + (v >> 4) & 0xF0F0F0F) * 0x1010101) >> 24; // count
+                    printf("movem.w (a0)+,d0-d%i\n",c-1);
                 }
                 else if ((out_potential->base_instruction & 0xffff0000) == MOVEM_W_FROM_REG)
                 {
-                    // TODO: insert code to count bits to determine number of registers
-                    printf("movem.w d0-d%i,",4);
+                    uint32_t c;
+                    uint32_t v = out_potential->base_instruction & 0xffff;
+                    v = v - ((v >> 1) & 0x55555555);                    // reuse input as temporary
+                    v = (v & 0x33333333) + ((v >> 2) & 0x33333333);     // temp
+                    c = ((v + (v >> 4) & 0xF0F0F0F) * 0x1010101) >> 24; // count
+                    printf("movem.w d0-d%i,", c-1);
                 }
                 else
                 {
@@ -1335,7 +1386,7 @@ void halve_it()
             case ORI_W:
                 // Output .w immediate value
                 *write_code++ = (uint16_t)out_potential->value;
-                dprintf("#$%04x,", out_potential->value);
+                cprintf("#$%04x,", out_potential->value);
                 break;
 
             case MOVEI_L:
@@ -1344,7 +1395,7 @@ void halve_it()
                 // Output .l immediate value
                 *write_code++ = (uint16_t)(out_potential->value >> 16);
                 *write_code++ = (uint16_t)(out_potential->value);
-                dprintf("#$%04x,", out_potential->value);
+                cprintf("#$%04x,", out_potential->value);
                 break;
 
             default:
@@ -1352,23 +1403,23 @@ void halve_it()
             }
 
             // Write screen offsets if needed
-            if (((out_potential->base_instruction) & 0xffff0000) == MOVEM_L_FROM_REG || (out_potential->base_instruction & 0xffff0000) == MOVEM_W_FROM_REG)
-            {
-                *write_code++ = (uint16_t)out_potential->screen_offset - lea_offset;
-                dprintf("$%04x(a1)\n", out_potential->screen_offset - lea_offset);
-            }
+            //if (((out_potential->base_instruction) & 0xffff0000) == MOVEM_L_FROM_REG || (out_potential->base_instruction & 0xffff0000) == MOVEM_W_FROM_REG)
+            //{
+            //    *write_code++ = (uint16_t)out_potential->screen_offset - lea_offset;
+            //    cprintf("$%04x(a1)\n", out_potential->screen_offset - lea_offset);
+            //}
 
             switch (out_potential->ea)
             {
             case EA_D_A1:
             case EA_MOVE_D_A1:
                 *write_code++ = (uint16_t)out_potential->screen_offset - lea_offset;
-                dprintf("$%04x(a1)\n", out_potential->screen_offset - lea_offset);
+                cprintf("$%04x(a1)\n", out_potential->screen_offset - lea_offset);
                 break;
 
             case EA_A1_POST:
             case EA_MOVE_A1_POST:
-                dprintf("(a1)+\n");
+                cprintf("(a1)+\n");
                 break;
 
             default:
@@ -1384,7 +1435,7 @@ void halve_it()
 
             if (out_potential->ea == EA_A1 || out_potential->ea == EA_MOVE_A1)
             {
-                dprintf("(a1)\n");
+                cprintf("(a1)\n");
             }
 
             // Patch lea offset if this is the first instruction in a (a1)+/(a1) block
@@ -1403,7 +1454,7 @@ void halve_it()
 
         // Final touch - RTS
         *write_code++ = RTS;
-        dprintf("rts\n");
+        cprintf("rts\n");
 
         // Now that we know the offset which the sprite data will be written,
         // let's fill in that lea gap we left at the beginning.
@@ -1412,7 +1463,7 @@ void halve_it()
         // Glue the sprite_data buffer immediately after the code
         
         uint16_t *read_sprite_data=sprite_data;
-#ifdef PRINT_DEBUG
+#ifdef PRINT_CODE
         printf("sprite_data_shift_%i:\ndc.w ", shift);
         j = 0;
         for (i = write_sprite_data - sprite_data - 1; i >= 0; i--)
@@ -1425,7 +1476,7 @@ void halve_it()
                 }
                 else
                 {
-                    printf("$%04x", *read_sprite_data++);
+                    printf("$%04x\n", *read_sprite_data++);
                 }
                 j++;
             }
@@ -1456,21 +1507,38 @@ void halve_it()
         // TODO: If we want to clip sprites then a lot more shifting needs to happen
         //
 
-        // Shift sprite by one place right
+        // Shift screen by one place right
         // Where's 68000's roxl when you need it, right?
-        for (i = BUFFER_SIZE / 2; i > 1; i--)
+        buf = (uint16_t *)buf_shift;
+        short screen_plane_words = screen_width / 16;
+        for (y = 0;y < screen_height;y++)
         {
-            *buf = ((buf[-4] & 1) << 7) | (*buf >> 1);
-            buf--;
+            for (plane_counter = 0; plane_counter < screen_planes; plane_counter++)
+            {
+                uint16_t *line_buf = buf + (screen_plane_words - 1)*screen_planes + plane_counter;
+                for (x = 0; x < screen_width / 16 - 1; x++)
+                {
+                    *line_buf = ((line_buf[-screen_plane_words] & 1) << 15) | (*line_buf >> 1);
+                    line_buf = line_buf - screen_planes;
+                }
+                *line_buf = *line_buf >> 1;
+            }
+            buf = buf + (screen_width / (16 / screen_planes));
         }
-        buf_shift[0] = buf_shift[0] >> 1;
 
         // Shift mask by one place right
-        for (i = BUFFER_SIZE / sprite_planes; i > 1; i--)
+        mask = (uint16_t *)buf_mask;
+        for (y = 0;y < screen_height;y++)
         {
-            buf_mask[i] = ((buf_mask[i - 1] & 1) << 7) | (buf_mask[i] >> 1);
+            uint16_t *line_mask = mask + (screen_plane_words - 1);
+            for (x = 0; x < screen_width / 16 - 1; x++)
+            {
+                *line_mask = ((line_mask[-1] & 1) << 15) | (*line_mask >> 1);
+                line_mask--;
+            }
+            *line_mask = *line_mask >> 1;
+            mask = mask + screen_plane_words;
         }
-        buf_mask[0] = buf_mask[0] >> 1;
 
     }
 }
