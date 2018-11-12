@@ -169,16 +169,16 @@ typedef struct _POTENTIAL_CODE
 U8 buf_origsprite[BUFFER_SIZE];    // This is where we load our original sprite data
 U8 buf_mask[BUFFER_SIZE / 4];      // Buffer used for creating the mask
 U8 buf_shift[BUFFER_SIZE];         // Buffer used to create the shifted sprite (this is the buffer which we'll do most of the work)
-MARK mark_buf[32000];                   // Buffer that flags the actions to be taken in order to draw the sprite
-FREQ freqtab[8000];                     // Frequency table for the values we're going to process
-POTENTIAL_CODE potential[16384];        // What we'll most probably output, bar a few optimisations
+MARK mark_buf[32000];              // Buffer that flags the actions to be taken in order to draw the sprite
+FREQ freqtab[8000];                // Frequency table for the values we're going to process
+POTENTIAL_CODE potential[16384];   // What we'll most probably output, bar a few optimisations
 U16 output_buf[65536];             // Where the output code will be stored
 U16 sprite_data[16384];            // The sprite data we're going to read when we want to draw the frames. Temporary buffer as this data will be stored immediately after the generated code
 
 // Our own ghetto memcpy (remember, we don't want to use any library stuff due to this potentially running on a real ST etc)
 // size must be multiple of 4. No checks done against this. Bite me.
 
-void copy(U32 *src, U32 *dst, S32 size)
+static inline void copy(U32 *src, U32 *dst, S32 size)
 {
     S32 count;
     for (count = (size >> 2) - 1; count >= 0; count--)
@@ -207,9 +207,9 @@ void copy(U32 *src, U32 *dst, S32 size)
 
 // Tinkered by GGN to sort FREQ struct members by .count
 
-void qsort(FREQ *base, size_t nmemb)
+void qsort(FREQ *base, S16 nmemb)
 {
-    size_t a, b, c;
+    S16 a, b, c;
     while (nmemb > 1)
     {
         a = 0;
@@ -442,7 +442,6 @@ void halve_it()
     }
 
     // Main - repeats 16 times for 16 preshifts
-    // TODO: If we output clipped sprites then we need to shift left and right as many steps as the sprite's width
     for (shift = 0; shift < shift_count; shift++)
     {
         U32 off = 0;
@@ -565,11 +564,20 @@ void halve_it()
 
         // Step 2: Try to optimise the actions recorded in step 1
 
-        // Check if we have 6 or more consecutive word moves.
+        // Check if we have 12 or more consecutive word moves.
         // We can then use movem.l
         // We assume that a0 will contain source data, a1 will contain
         // the destination buffer and a7 the stack. So this gives us
         // 13 .l registers i.e. 26 .w moves.
+        // move.w #x,d(An) = 16 (we need 2 of those to move a .l)
+        // move.l #x,d(An) = 24
+        // movem.l (An)+,<regs> = 12+8*num_regs
+        // movem.l <regs>,d(An) = 12+8*num_regs
+        // So a momem.l pair takes 24+16*num_regs
+        // num_regs   1   2   3   4   5   6   7  8  9  10 11
+        // move.l #  24  48  72  96 120 144 168
+        // move.w #  32  64  96 128 160 192 224
+        // movem     64  80  96 112 128 144 160
         // TODO: maybe we could keep a number A_MOVE generated in step 1 and skip this whole chunk if it's 0?
         
         dprintf("\nmovem.l optimisations\n---------------------\n");
@@ -597,9 +605,15 @@ void halve_it()
                     num_moves++;
                     temp_mark++;
                 }
-                if (num_moves >= 6)
+                if (num_moves >= 12)
                 {
-                    // 6 move.w = 3 move.l, and from 3 move.l onwards it's more optimal to go movem.l
+                    // 12 move.w = 6 move.l, and from 6 move.l onwards it's more optimal to go 2x movem.l
+                    if (num_moves > 28)
+                    {
+                        // Whoah, easy there tiger! We only have 14 available registers!
+                        num_moves = 28;
+                    }
+
                     num_moves = num_moves & -2;                         // Even out the number as we can't move half a longword!
                     out_potential[1].screen_offset = cur_mark->offset;  // Save screen offset for the second movem
                     if (num_moves <= 8)
@@ -671,13 +685,8 @@ void halve_it()
         // num_regs  1  2  3  4  5  6  7  8  9  10 11
         // move.l   24 48 72 96
         // move.w   16 32 48 64
-        // movem    40 48 56 56
-        // It seems like for anything above 3 registers is good for movem.w (so, a bit like movem.l then)
-        // TODO: All said, this check might not hit very often - an even number of A_MOVE that make sense will
-        // be handled by movem.l above. Odd numbers will also be handled by movem.l and the residual
-        // A_MOVE will be just a single move.w. So realistically this will only get used for
-        // exactly 3-5 A_MOVEs. That is, unless I'm missing something.
-        // So this block of code should be simplified to just chekcing for 3-5 A_MOVEs
+        // movem    40 48 56 64
+        // It seems like for anything above 3 registers is good for movem.w
         
         dprintf("\nmovem.w optimisations\n---------------------\n");
         cur_mark = mark_buf;
@@ -700,7 +709,7 @@ void halve_it()
                     num_moves++;
                     temp_mark++;
                 }
-                if (num_moves >= 3)
+                if (num_moves >= 4)
                 {
                     out_potential[1].screen_offset = cur_mark->offset;  // Save screen offset for the second movem
                     dprintf("movem.w (a0)+,d0-d%i\nmovem.w d0-d%i,$%04x(a1)\ndc.w ", num_moves - 1, num_moves - 1, cur_mark->offset);
@@ -718,7 +727,6 @@ void halve_it()
                     // Assuming that registers d0-d7 and a2-a6 are free to clobber
                     out_potential->base_instruction = MOVEM_W_TO_REG; // movem.w (a0)+,register_list
                     U16 register_mask;
-                    // TODO: this is probably a redundant check if only 3 to 5 movem.ws are ever used
                     if (num_moves <= 8)
                     {
                         // Just data registers
@@ -1616,7 +1624,10 @@ void halve_it()
         {
             if (shift == 16)
             {
+                // Let's bring back a fresh copy of the sprite
                 copy((U32 *)buf_origsprite, (U32 *)buf_shift, BUFFER_SIZE);
+                // And recreate the mask
+                // TODO: If user supplied mask, copy that instead
             }
 
         }
@@ -1624,7 +1635,10 @@ void halve_it()
         {
             if (shift == 16 + sprite_width - 1)
             {
+                // Let's bring back a fresh copy of the sprite
                 copy((U32 *)buf_origsprite, (U32 *)buf_shift, BUFFER_SIZE);
+                // And recreate the mask
+                // TODO: If user supplied mask, copy that instead
             }
 
         }
