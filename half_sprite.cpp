@@ -57,16 +57,23 @@
 #endif
 
 #define BUFFER_SIZE 32000
+
+// Print debug info to the console if requested
 #ifdef PRINT_DEBUG
 #define dprintf(...) printf(__VA_ARGS__)
 #else
 #define dprintf(...)
 #endif
+
+// Emit actual code to the console if requested
 #ifdef PRINT_CODE
 #define cprintf(...) printf(__VA_ARGS__)
 #else
 #define cprintf(...)
 #endif
+
+// Print to both console and code 
+#define bprintf(...) dprintf(__VA_ARGS__); cprintf(__VA_ARGS__);
 
 // Set up a namespace for our typedefs (dml wisdom)
 
@@ -378,12 +385,33 @@ void halve_it()
         cprintf("sprite_code_shift_15\n");
     }
 
-    // Main - repeats 16 times for 16 preshifts
+#ifdef CYCLES_REPORT
+        U32 cycles_unoptimised;
+        U32 cycles_saved_from_movem_l;
+        U32 cycles_saved_from_movem_w;
+        U32 cycles_saved_from_move_l;
+        U32 cycles_saved_from_movep;
+        U32 cycles_saved_from_and_l_or_l;
+        U32 cycles_saved_from_registers;
+        U32 cycles_saved_from_post_increment;
+#endif
+    
+    // Main - repeats 16 times for 16 preshifts (plus 2*(sprite_width-1) if we're clipping)
     for (shift = 0; shift < shift_count; shift++)
     {
         short x, y;
         U16 *buf = (U16 *)buf_shift;
         U16 *mask = (U16 *)buf_mask;
+#ifdef CYCLES_REPORT
+        cycles_unoptimised = 0;
+        cycles_saved_from_movem_l = 0;
+        cycles_saved_from_movem_w = 0;
+        cycles_saved_from_move_l = 0;
+        cycles_saved_from_movep = 0;
+        cycles_saved_from_and_l_or_l = 0;
+        cycles_saved_from_registers = 0;
+        cycles_saved_from_post_increment = 0;
+#endif
 
         if (shift == 0 || (shift_count > 16 && (shift == 16 || shift == 16 + sprite_width - 1)))
         {
@@ -558,6 +586,9 @@ void halve_it()
                         cur_mark++;
                         num_actions++;
                         goto skipword;
+#ifdef CYCLES_REPORT
+                        cycles_unoptimised = cycles_unoptimised +12;   // move.w #xxx,d(An)
+#endif
                     }
                     // Nothing to draw here, skip word
                     goto skipword;
@@ -576,6 +607,9 @@ void halve_it()
                         // A "move" instruction will suffice 
                         cur_mark->action = A_MOVE;
                         cur_mark->value_and = 0;
+#ifdef CYCLES_REPORT
+                        cycles_unoptimised = cycles_unoptimised +12;   // move.w #xxx,d(An)
+#endif
                     }
                     else if ((val_or | val_and) == 0xffff)
                     {
@@ -583,12 +617,18 @@ void halve_it()
                         // We only need to OR in this case. Kudos to Leonard of Oxygene for the idea.
                         cur_mark->action = A_OR;
                         cur_mark->value_and = 0;
+#ifdef CYCLES_REPORT
+                        cycles_unoptimised = cycles_unoptimised +16;   // ori.w #xxx,d(An)
+#endif
                     }
                     else
                     {
                         // Generic case - we need to AND the mask and OR the sprite value
                         cur_mark->action = A_AND_OR;
                         cur_mark->value_and = val_and;
+#ifdef CYCLES_REPORT
+                        cycles_unoptimised = cycles_unoptimised +24;   // andi.w #xxx,d(An) / ori.w #yyy,d(An)
+#endif
                     }
                 }
                 else
@@ -596,6 +636,9 @@ void halve_it()
                     // We won't mask anything, so just OR things
                     cur_mark->action = A_OR;
                     cur_mark->value_and = 0;
+#ifdef CYCLES_REPORT
+                    cycles_unoptimised = cycles_unoptimised +12;   // move.w #xxx,d(An)
+#endif
                 }
                 num_actions++;
                 cur_mark++;
@@ -670,8 +713,12 @@ void halve_it()
                         // Whoah, easy there tiger! We only have 14 available registers!
                         num_moves = 28;
                     }
-
                     num_moves = num_moves & -2;                         // Even out the number as we can't move half a longword!
+
+#ifdef CYCLES_REPORT
+                    cycles_saved_from_movem_l = cycles_saved_from_movem_l + 8 * (num_moves / 2 - 6); // movem.l (a0)+,regs / movem.l regs,d(A1)
+#endif
+
                     out_potential[1].screen_offset = cur_mark->offset;  // Save screen offset for the second movem
                     if (num_moves <= 8)
                     {
@@ -728,7 +775,8 @@ void halve_it()
 
         // Check if we have consecutive moves that did not fall into the movem.l
         // case and see if we can do something using movem.w
-        // movem.w <regs>,d(An) takes 16+4*num_regs cycles
+        // movem.w (An)+,<regs> takes 12+4*num_regs cycles
+        // movem.w <regs>,d(An) takes 12+4*num_regs cycles
         // move.l Dn,d(Am) takes 16 cycles
         // move.w Dn,d(Am) takes 12 cycles
         // We also need to load the values into data registers
@@ -738,11 +786,11 @@ void halve_it()
         // So the actual cost for the above 3 cases is:
         // move.l - 24 cycles
         // move.w - 16 cycles
-        // movem.w - 32+8*num_regs
+        // movem.w - 24+8*num_regs
         // num_regs  1  2  3  4  5  6  7  8  9  10 11
         // move.l   24 48 72 96
         // move.w   16 32 48 64
-        // movem    40 48 56 64
+        // movem    32 40 48 56
         // It seems like for anything above 3 registers is good for movem.w
         
         dprintf("\nmovem.w optimisations\n---------------------\n");
@@ -766,8 +814,11 @@ void halve_it()
                     num_moves++;
                     temp_mark++;
                 }
-                if (num_moves >= 4)
+                if (num_moves >= 3)
                 {
+#ifdef CYCLES_REPORT
+                    cycles_saved_from_movem_w = cycles_saved_from_movem_w + 8 * (num_moves - 3); // movem.l (a0)+,regs / movem.l regs,d(A1)
+#endif
                     out_potential[1].screen_offset = cur_mark->offset;  // Save screen offset for the second movem
                     dprintf("movem.w (a0)+,d0-d%i\nmovem.w d0-d%i,$%04x(a1)\ndc.w ", num_moves - 1, num_moves - 1, cur_mark->offset);
                     for (j = num_moves - 1; j >= 0; j--)
@@ -810,7 +861,9 @@ void halve_it()
         }
 
         // Check if any consecutive moves survived the above two passes that could be combined in move.ls
-        
+        // 2x move.w #x,d(An) = 2x16 cycles.
+        //    move.l #x,d(An) = 24 cycles.
+
         dprintf("\nmove.l optimisations\n--------------------\n");
         cur_mark = mark_buf;
         S32 num_movel = 0;
@@ -842,6 +895,10 @@ void halve_it()
                     num_movel = num_movel + 1;
 
                     i = i - 1;
+
+#ifdef CYCLES_REPORT
+                    cycles_saved_from_move_l = cycles_saved_from_move_l + 8; // move.l #xxx,d(An)
+#endif
                 }
             }
             cur_mark++;
@@ -859,6 +916,12 @@ void halve_it()
         // movep.l dn, 1(a0); 6
         // addq.w #8, a0; 2 (total 11)
         
+        // andi/ori.l #xx,d(An) = 32 cycles
+
+        // move.l #xx,d0    = 12 cycles
+        // movep.l d0,d(An) = 24 cycles
+
+
         dprintf("\nmovep.l optimisations\n---------------------\n");
         cur_mark = mark_buf;
         loop_count = num_actions - 1 - 3;
@@ -878,6 +941,9 @@ void halve_it()
                         ((cur_mark[2].value_or & 0xff00) == 0) &&
                         ((cur_mark[3].value_or & 0xff00) == 0))
                     {
+#ifdef CYCLES_REPORT
+                        cycles_saved_from_movep = cycles_saved_from_movep + 4 * 32 - 12 - 24;
+#endif
                         U32 longval;
                         longval = ((cur_mark->value_or << 16) & 0xff000000) | ((cur_mark[1].value_or << 16) & 0x00ff0000) | ((cur_mark[2].value_or >> 8) & 0x0000ff00) | (cur_mark[3].value_or & 0x000000ff);
                         longval = (cur_mark->value_or << 16) | cur_mark[1].value_or;
@@ -906,7 +972,9 @@ void halve_it()
 
         // Check if we have 2 consecutive AND/OR pairs
         // We can combine those into and.l/or.l pair
-        
+        // andi/ori.w #xx,d(an) = 20 cycles
+        // andi/ori.l #xx,d(An) = 32 cycles
+
         dprintf("\nandi.l/ori.l pair optimisations\n-------------------------------\n");
         U16 mark_to_search_for = A_AND_OR;
         if (!use_masking)
@@ -947,6 +1015,10 @@ void halve_it()
                     cur_mark->action = A_DONE;
 
                     i = i - 1;
+
+#ifdef CYCLES_REPORT
+                    cycles_saved_from_and_l_or_l = cycles_saved_from_and_l_or_l + 2*(2 * 20 - 32); // 2xandi.w + 2xori.w -> andi.l + ori.l
+#endif
                 }
             }
             cur_mark++;
@@ -975,6 +1047,9 @@ void halve_it()
                         cur_mark++;
                         cur_mark->action = A_DONE;
                         i = i - 1;
+#ifdef CYCLES_REPORT
+                        cycles_saved_from_and_l_or_l = cycles_saved_from_and_l_or_l + 2 * (2 * 20 - 32); // 2xandi.w -> andi.l
+#endif
                     }
                 }
             }
@@ -992,6 +1067,9 @@ void halve_it()
                     cur_mark++;
                     cur_mark->action = A_DONE;
                     i = i - 1;
+#ifdef CYCLES_REPORT
+                    cycles_saved_from_and_l_or_l = cycles_saved_from_and_l_or_l + 2 * (2 * 20 - 32); // 2xori.w -> ori.l
+#endif
                 }
             }
             cur_mark++;
@@ -1123,7 +1201,23 @@ void halve_it()
         }
 
         // Anything that remains from the above passes we can safely assume that falls under the and.w/or.w case
-        
+        // TODO: shouldn't this be moved before the frequency table buildup?
+        // TODO: shouldn't this be moved before the frequency table buildup?
+        // TODO: shouldn't this be moved before the frequency table buildup?
+        // TODO: shouldn't this be moved before the frequency table buildup?
+        // TODO: shouldn't this be moved before the frequency table buildup?
+        // TODO: shouldn't this be moved before the frequency table buildup?
+        // TODO: shouldn't this be moved before the frequency table buildup?
+        // TODO: shouldn't this be moved before the frequency table buildup?
+        // TODO: shouldn't this be moved before the frequency table buildup?
+        // TODO: shouldn't this be moved before the frequency table buildup?
+        // TODO: shouldn't this be moved before the frequency table buildup?
+        // TODO: shouldn't this be moved before the frequency table buildup?
+        // TODO: shouldn't this be moved before the frequency table buildup?
+        // TODO: shouldn't this be moved before the frequency table buildup?
+        // TODO: shouldn't this be moved before the frequency table buildup?
+        // TODO: shouldn't this be moved before the frequency table buildup?
+        // TODO: shouldn't this be moved before the frequency table buildup?
         dprintf("\nStray and.w/or.w\n----------------\n");
         cur_mark = mark_buf;
         loop_count = num_actions - 1;
@@ -1171,6 +1265,18 @@ void halve_it()
         //       a common pool of data for all frames. Probably makes the output code more complex. Hilarity might ensue.
         // TODO: could some of the lower frequency values be generated from the registers using simple instructions like
         //       NOT/NEG etc?
+        // TODO: we can definitely the gains from this step nullified or even negated if we emit too many SWAPs!
+        //       One solution would be to only allow one SWAP per register and then refuse to any transformations for that register
+        //       Another could be to just sort all the transformed operations first by register usage, then we could be able to minimise the amount of SWAP emissions
+        //       HOWEVER this opens up a larger can of worms: First of all we should sort the ANDs and ORs independantly (as we really don't want to OR before AND for example!)
+        //       If we sort though we'd have to emit code in non sequential offsets. This can have an impact in the optimisation step below where we take advantage of post incrementing of the address registers
+        //       This is a bit of a headache!
+        //       Potentially we could solve this by iterating twice through the data: first without sorting for minimising SWAP emission and then with sorting, and then pick the path that leads to most saves
+        //       Do we really want to fall inside that rabbit hole though?
+        // andi/ori.w #xx,d(An) = 20 cycles
+        // move.w #xxx,d(An)    = 16 cycles
+        // and/or.w Dn,d(Am)    = 16 cycles
+        // move.w Dn,d(Am)      = 12 cycles
 
         dprintf("\nData register optimisations\n---------------------------\n");
         POTENTIAL_CODE *potential_end = out_potential;
@@ -1195,6 +1301,9 @@ void halve_it()
                             dprintf("swap d%i\n", i >> 1);
                             out_potential->value |= EMIT_SWAP;
                             swaptable[i >> 1] = 1;
+#ifdef CYCLES_REPORT
+                            cycles_saved_from_registers = cycles_saved_from_registers - 4;  // Negative gain!
+#endif
                         }
 
                     }
@@ -1207,6 +1316,9 @@ void halve_it()
                             dprintf("swap d%i\n", i >> 1);
                             out_potential->value |= EMIT_SWAP;
                             swaptable[i >> 1] = 0;
+#ifdef CYCLES_REPORT
+                            cycles_saved_from_registers = cycles_saved_from_registers - 4;  // Negative gain!
+#endif
                         }
                         else
                         {
@@ -1219,16 +1331,25 @@ void halve_it()
                         out_potential->base_instruction = MOVED_W;          // Modify instruction
                         out_potential->base_instruction |= i >> 1;          // Register field (D0-D7)
                         dprintf("move.w #$%04x,$%04x(a1) -> move.w d%i,$%04x(a1)\n",out_potential->value,out_potential->screen_offset,i>>1,out_potential->screen_offset);
+#ifdef CYCLES_REPORT
+                        cycles_saved_from_registers = cycles_saved_from_registers + 4;
+#endif
                         break;
                     case ANDI_W:
                         out_potential->base_instruction = ANDD_W;           // Modify instruction
                         out_potential->base_instruction |= (i >> 1) << 9;   // Register field (D0-D7)
                         dprintf("andi.w #$%04x,$%04x(a1) -> and.w d%i,$%04x(a1)\n", out_potential->value, out_potential->screen_offset, i >> 1, out_potential->screen_offset);
+#ifdef CYCLES_REPORT
+                        cycles_saved_from_registers = cycles_saved_from_registers + 4;
+#endif
                         break;
                     case ORI_W:
                         out_potential->base_instruction = ORD_W;            // Modify instruction
                         out_potential->base_instruction |= (i >> 1) << 9;   // Register field (D0-D7)
                         dprintf("ori.w  #$%04x,$%04x(a1) -> or.w  d%i,$%04x(a1)\n", out_potential->value, out_potential->screen_offset, i >> 1, out_potential->screen_offset);
+#ifdef CYCLES_REPORT
+                        cycles_saved_from_registers = cycles_saved_from_registers + 4;
+#endif
                         break;
 
                     }
@@ -1252,7 +1373,6 @@ void halve_it()
         // adda.w/l #x,a1    = 12/16 cycles
         // NOTE: OR cycles are identical to AND
 
-        // We have a few strategies to consider here:
         // If we use a data register then we either do andi.w Dn,d(An) or and.w Dn,(an)+
         // For the andi case it's pretty straightforward, number of cycles=16*operations.
         // For the other case we have to consider that we have to do an initial lea d(a1),a1 in order to
@@ -1292,6 +1412,9 @@ void halve_it()
                         // We have a good post-increment case so let's patch some instructions up
                         POTENTIAL_CODE *patch_instructions = out_potential - consecutive_instructions - 1;
                         patch_instructions->bytes_affected = 0xffff;        // Signal lea emission at the start of the block
+#ifdef CYCLES_REPORT
+                        cycles_saved_from_post_increment = cycles_saved_from_post_increment - 8;    // Initial lea cost, will be compensated from the loop below
+#endif 
                         loop_count = consecutive_instructions - 1;
                         do
                         {
@@ -1302,11 +1425,18 @@ void halve_it()
                                 {
                                     patch_instructions->ea = EA_A1;
                                     dprintf("and/or.w <ea>,$%04x(a1) -> (a1)\n", patch_instructions->screen_offset);
+#ifdef CYCLES_REPORT
+                                    cycles_saved_from_post_increment = cycles_saved_from_post_increment + 4;
+#endif 
+
                                 }
                                 else
                                 {
                                     patch_instructions->ea = EA_A1_POST;
                                     dprintf("and/or.w <ea>,$%04x(a1) -> (a1)+\n", patch_instructions->screen_offset);
+#ifdef CYCLES_REPORT
+                                    cycles_saved_from_post_increment = cycles_saved_from_post_increment + 4;
+#endif 
                                 }
                                 break;
                             case EA_MOVE_D_A1:
@@ -1314,11 +1444,17 @@ void halve_it()
                                 {
                                     patch_instructions->ea = EA_MOVE_A1;
                                     dprintf("move.w <ea>,$%04x(a1) -> (a1)\n", patch_instructions->screen_offset);
+#ifdef CYCLES_REPORT
+                                    cycles_saved_from_post_increment = cycles_saved_from_post_increment + 4;
+#endif 
                                 }
                                 else
                                 {
                                     patch_instructions->ea = EA_MOVE_A1_POST;
                                     dprintf("move.w <ea>,$%04x(a1) -> (a1)+\n", patch_instructions->screen_offset);
+#ifdef CYCLES_REPORT
+                                    cycles_saved_from_post_increment = cycles_saved_from_post_increment + 4;
+#endif 
                                 }
                                 break;
                             }
@@ -1330,10 +1466,16 @@ void halve_it()
                         case EA_D_A1:
                             patch_instructions->ea = EA_A1;
                             dprintf("and/or.w <ea>,$%04x(a1) -> (a1)\n", patch_instructions->screen_offset);
+#ifdef CYCLES_REPORT
+                            cycles_saved_from_post_increment = cycles_saved_from_post_increment + 4;
+#endif 
                             break;
                         case EA_MOVE_D_A1:
                             patch_instructions->ea = EA_MOVE_A1;
                             dprintf("move.w <ea>,$%04x(a1) -> (a1)\n", patch_instructions->screen_offset);
+#ifdef CYCLES_REPORT
+                            cycles_saved_from_post_increment = cycles_saved_from_post_increment + 4;
+#endif 
                             break;
                         }
                         patch_instructions->bytes_affected = 0xfffe;    // Signal updating of lea counter
@@ -1353,6 +1495,20 @@ void halve_it()
         U16 *lea_patch_address = 0;
         U16 lea_offset = 0;
         dprintf("\n\nFinal code:\n-----------\n");
+        cprintf(";----------------------------------------------------\n");
+        cprintf("; Frame %i\n", shift);
+#ifdef CYCLES_REPORT
+        bprintf("; Stats:\n");
+        bprintf("; Non-optimal number of cycles: %i\n", cycles_unoptimised);
+        bprintf("; Savings from movem.l        : %i\n", cycles_saved_from_movem_l);
+        bprintf("; Savings from movem.w        : %i\n", cycles_saved_from_movem_w);
+        bprintf("; Savings from movemp         : %i\n", cycles_saved_from_movep);
+        bprintf("; Savings from and.l/or.l     : %i\n", cycles_saved_from_and_l_or_l);
+        bprintf("; Savings from registers      : %i\n", cycles_saved_from_registers);
+        bprintf("; Savings from post increments: %i\n", cycles_saved_from_post_increment);
+        bprintf("; Total savings               : %i\n", cycles_saved_from_movem_l + cycles_saved_from_movem_w + cycles_saved_from_movep + cycles_saved_from_and_l_or_l + cycles_saved_from_registers + cycles_saved_from_post_increment);
+        bprintf("; Final number of cycles      : %i\n", cycles_unoptimised - (cycles_saved_from_movem_l + cycles_saved_from_movem_w + cycles_saved_from_movep + cycles_saved_from_and_l_or_l + cycles_saved_from_registers + cycles_saved_from_post_increment));
+#endif
         cprintf("sprite_code_shift_%i:\n", shift);
 
         // We need to load a0 with the sprite data
