@@ -50,6 +50,8 @@
 
 // Started 19 Octomber 2018 20:30
 
+//#define PRINT_DEBUG
+
 #include <assert.h>
 
 #if defined(PRINT_CODE) || defined (PRINT_DEBUG) || defined(WIN32) || defined(WIN64) || defined(__APPLE__) || defined(__linux__) || defined(__CYGWIN__) || defined(__MINGW32__)
@@ -67,7 +69,8 @@
 
 // Emit actual code to the console if requested
 #ifdef PRINT_CODE
-#define cprintf(...) printf(__VA_ARGS__)
+FILE *code_file;
+#define cprintf(...) fprintf(code_file,__VA_ARGS__)
 #else
 #define cprintf(...)
 #endif
@@ -89,7 +92,7 @@ namespace brown
 
 using namespace brown;
 
-// Yes, let's define max because it's a complex internal function O_o
+// Yes, let's define max because it's a complex math function that can't live inside standard libraries O_o
 #define max(a,b) ( a > b ? a : b )
 
 // Instructions opcodes
@@ -192,6 +195,15 @@ static inline void copy(U32 *src, U32 *dst, S32 size)
     {
         *dst++ = *src++;
     }
+}
+
+static inline void clear(U16 *data, S32 size)
+{
+    size = size / 2;
+    do
+    {
+        *data++ = 0;
+    } while (--size >= 0);
 }
 
 // Code for qsort obtained from https://code.google.com/p/propgcc/source/browse/lib/stdlib/qsort.c
@@ -331,13 +343,13 @@ void halve_it()
             }
             y++;
         } while (--loop_count != -1);
+        // Increment width and height since our scanning is 0 based
+        sprite_height++;
+        sprite_width = sprite_width + 16;
     }
-    // Increment width and height since our scanning is 0 based
-    sprite_height++;
-    sprite_width = sprite_width + 16;
-    S16 sprite_words = sprite_width / 16;       // How many words is our sprite horizontally without the extra word for shifts (bitplane independant)
     // Add one horizontal word to width to allow for shifting
     sprite_width = sprite_width + 16;
+    S16 sprite_words = sprite_width / 16;       // How many words is our sprite horizontally including the extra word for shifts (bitplane independant)
 
     S16 num_actions;
     S16 shift;
@@ -351,27 +363,21 @@ void halve_it()
     S16 shift_count = 15;
     if (horizontal_clip)
     {
-        write_code = write_code + (16 + sprite_width * 2) * 2;
+        write_code = write_code + (16 + (sprite_width - 16) * 2) * 2;
         cprintf("sprite_routines:\n");
-        cprintf("dc.l ");
-        for (i = 0; i < 15; i++)
+        for (i = 0; i < 16; i++)
         {
-            cprintf("sprite_code_shift_%i,", i);
+            cprintf("dc.l sprite_code_shift_%i\n", i);
         }
-        cprintf("sprite_code_shift_15\n");
-        cprintf("dc.l ");
-        for (i = 0; i < sprite_width; i++)
+        for (i = 0; i < (sprite_width - 16) - 1; i++)
         {
-            cprintf("sprite_code_clip_right_%i,", i);
+            cprintf("dc.l sprite_code_clip_left_%i\n", i);
         }
-        cprintf("sprite_code_clip_right_%i\n", sprite_width);
-        cprintf("dc.l ");
-        for (i = 0; i < sprite_width; i++)
+        for (i = 0; i < (sprite_width - 16) - 1; i++)
         {
-            cprintf("sprite_code_clip_left_%i,", i);
+            cprintf("dc.l sprite_code_clip_right_%i\n", i);
         }
-        cprintf("sprite_code_clip_left_%i\n", sprite_width);
-        shift_count = 16 + (sprite_width - 1) * 2 - 1;
+        shift_count = 16 + ((sprite_width - 16) - 1) * 2;
     }
     else
     {
@@ -403,6 +409,7 @@ void halve_it()
         U16 *buf = (U16 *)buf_shift;
         U16 *mask = (U16 *)buf_mask;
 #ifdef CYCLES_REPORT
+        // Reset cycle counters
         cycles_unoptimised = 0;
         cycles_saved_from_movem_l = 0;
         cycles_saved_from_movem_w = 0;
@@ -413,7 +420,7 @@ void halve_it()
         cycles_saved_from_post_increment = 0;
 #endif
 
-        if (shift == 0 || (shift_count > 16 && (shift == 16 || shift == 16 + sprite_width - 1)))
+        if (shift == 0 || (shift_count > 16 && (shift == 16 || shift == 16 + (sprite_width-32) - 1)))
         {
             // Prepare mask at the first iteration
             // Also when generate clipping code at the respective starts, once for shifting left and once for shifting right
@@ -496,28 +503,27 @@ void halve_it()
                     mask = (U16 *)buf_mask;
                     for (y = 0; y < sprite_height; y++)
                     {
-                        // Point to the end of the scanline as we'll shift from right to left
-                        // Our counters and offsets here are (sprite_words+1) due to the fact that sprite_words counts sprite words without the extra word for shifting
+                        // Point to the start of the scanline as we'll shift from left to right
                         U16 *line_mask = mask;
-                        for (x = 0; x < (sprite_words + 1) - 1; x++)
+                        for (x = 0; x < sprite_words - 1; x++)
                         {
                             *line_mask = (*line_mask << 1) | ((line_mask[1] & 1) >> 15);
                             line_mask++;
                         }
                         // Last word of the scanline - we also have to generate a "1" at the rightmost pixel since this is a mask and we'll be shifting it one place to the right
-                        *line_mask = (*line_mask >> 1) | 1;
+                        *line_mask = (*line_mask << 1) | 1;
                         // Advance to next scanline
                         mask = mask + screen_plane_words;
                     }
 
                 }
-                else if (shift == 16 + sprite_width)
+                else if (shift == 16 + (sprite_width - 16))
                 {
+                    // Shift the mask right once
                     mask = (U16 *)buf_mask;
                     for (y = 0; y < sprite_height; y++)
                     {
                         // Point to the end of the scanline as we'll shift from right to left
-                        // Our counters and offsets here are (sprite_words+1) due to the fact that sprite_words counts sprite words without the extra word for shifting
                         U16 *line_mask = mask + ((sprite_words + 1) - 1);
                         for (x = 0; x < (sprite_words + 1) - 1; x++)
                         {
@@ -536,6 +542,7 @@ void halve_it()
         U32 off = 0;
         num_actions = 0;
         MARK *cur_mark = mark_buf;
+        mask = (U16 *)buf_mask;
         U16 val_and = *mask;
         U16 val_or;        
         out_potential = potential;                      // Reset potential moves pointer
@@ -587,7 +594,7 @@ void halve_it()
                         num_actions++;
                         goto skipword;
 #ifdef CYCLES_REPORT
-                        cycles_unoptimised = cycles_unoptimised +12;   // move.w #xxx,d(An)
+                        cycles_unoptimised = cycles_unoptimised + 12;   // move.w #xxx,d(An)
 #endif
                     }
                     // Nothing to draw here, skip word
@@ -608,7 +615,7 @@ void halve_it()
                         cur_mark->action = A_MOVE;
                         cur_mark->value_and = 0;
 #ifdef CYCLES_REPORT
-                        cycles_unoptimised = cycles_unoptimised +12;   // move.w #xxx,d(An)
+                        cycles_unoptimised = cycles_unoptimised + 12;   // move.w #xxx,d(An)
 #endif
                     }
                     else if ((val_or | val_and) == 0xffff)
@@ -618,7 +625,7 @@ void halve_it()
                         cur_mark->action = A_OR;
                         cur_mark->value_and = 0;
 #ifdef CYCLES_REPORT
-                        cycles_unoptimised = cycles_unoptimised +16;   // ori.w #xxx,d(An)
+                        cycles_unoptimised = cycles_unoptimised + 16;   // ori.w #xxx,d(An)
 #endif
                     }
                     else
@@ -627,7 +634,7 @@ void halve_it()
                         cur_mark->action = A_AND_OR;
                         cur_mark->value_and = val_and;
 #ifdef CYCLES_REPORT
-                        cycles_unoptimised = cycles_unoptimised +24;   // andi.w #xxx,d(An) / ori.w #yyy,d(An)
+                        cycles_unoptimised = cycles_unoptimised + 24;   // andi.w #xxx,d(An) / ori.w #yyy,d(An)
 #endif
                     }
                 }
@@ -637,7 +644,7 @@ void halve_it()
                     cur_mark->action = A_OR;
                     cur_mark->value_and = 0;
 #ifdef CYCLES_REPORT
-                    cycles_unoptimised = cycles_unoptimised +12;   // move.w #xxx,d(An)
+                    cycles_unoptimised = cycles_unoptimised + 12;   // move.w #xxx,d(An)
 #endif
                 }
                 num_actions++;
@@ -674,10 +681,10 @@ void halve_it()
         // movem.l (An)+,<regs> = 12+8*num_regs
         // movem.l <regs>,d(An) = 12+8*num_regs
         // So a momem.l pair takes 24+16*num_regs
-        // num_regs   1   2   3   4   5   6   7  8  9  10 11
-        // move.l #  24  48  72  96 120 144 168
-        // move.w #  32  64  96 128 160 192 224
-        // movem     64  80  96 112 128 144 160
+        // num_regs     1   2   3   4   5   6   7  8  9  10 11
+        // move.l #    24  48  72  96 120 144 168
+        // 2xmove.w #  32  64  96 128 160 192 224
+        // 2xmovem.l   40  56  72  88 104 120 136
         // TODO: maybe we could keep a number A_MOVE generated in step 1 and skip this whole chunk if it's 0?
         
         dprintf("\nmovem.l optimisations\n---------------------\n");
@@ -705,28 +712,28 @@ void halve_it()
                     num_moves++;
                     temp_mark++;
                 }
-                if (num_moves >= 12)
+                if (num_moves >= 6)
                 {
-                    // 12 move.w = 6 move.l, and from 6 move.l onwards it's more optimal to go 2x movem.l
+                    // 6 move.w = 3 move.l, and from 3 move.l onwards it's more optimal to go 2x movem.l
                     if (num_moves > 28)
                     {
-                        // Whoah, easy there tiger! We only have 14 available registers!
+                        // Woah, easy there tiger! We only have 14 available registers!
                         num_moves = 28;
                     }
                     num_moves = num_moves & -2;                         // Even out the number as we can't move half a longword!
 
 #ifdef CYCLES_REPORT
-                    cycles_saved_from_movem_l = cycles_saved_from_movem_l + 8 * (num_moves / 2 - 6); // movem.l (a0)+,regs / movem.l regs,d(A1)
+                    cycles_saved_from_movem_l = cycles_saved_from_movem_l + 8 * (num_moves / 2 - 3); // movem.l (a0)+,regs / movem.l regs,d(A1)
 #endif
 
                     out_potential[1].screen_offset = cur_mark->offset;  // Save screen offset for the second movem
-                    if (num_moves <= 8)
+                    if (num_moves <= 8 * 2)
                     {
-                        dprintf("movem.l (a0)+,d0-d%i\nmovem.l d0-d%i,$%04x(a1)\ndc.w ", num_moves - 1, num_moves - 1, cur_mark->offset);
+                        dprintf("movem.l (a0)+,d0-d%i\nmovem.l d0-d%i,$%04x(a1)\ndc.w ", num_moves/2 - 1, num_moves/2 - 1, cur_mark->offset);
                     }
                     else
                     {
-                        dprintf("movem.l (a0)+,d0-d7/a2-a%i\nmovem.l d0-d7/a2-a%i,$%04x(a1)\ndc.w ", num_moves - 1 - 8 + 2, num_moves - 1 - 8 + 2, cur_mark->offset);
+                        dprintf("movem.l (a0)+,d0-d7/a2-a%i\nmovem.l d0-d7/a2-a%i,$%04x(a1)\ndc.w ", num_moves/2 - 1 - 8 + 2, num_moves/2 - 1 - 8 + 2, cur_mark->offset);
                     }
                     for (j = num_moves - 1; j >= 0; j--)
                     {
@@ -1078,27 +1085,6 @@ void halve_it()
         // Any actions left from here on are candidates for register caching. Let's mark this.
         POTENTIAL_CODE *cacheable_code = out_potential;
 
-        // Any leftover moves are just going to be move.ws
-        // TODO: Hmmm, since a2-a6 aren't going to be used by and/or then we could use them for move.w
-        
-        dprintf("\nmove.w\n------\n");
-        cur_mark = mark_buf;
-        for (i = num_actions - 1; i >= 0; i--)
-        {
-            if (cur_mark->action == A_MOVE)
-            {
-                dprintf("move.w #$%04x,$%04x(a1)\n", cur_mark->value_or, cur_mark->offset);
-                // Let's not mark the actions as done yet, the values could be used in the frequency table
-                cur_mark->action = A_DONE;
-                out_potential->base_instruction = MOVEI_W;  // move.w #xxx,
-                out_potential->ea = EA_MOVE_D_A1;                  // d(a1)
-                out_potential->screen_offset = cur_mark->offset;
-                out_potential->value = cur_mark->value_or;
-                out_potential->bytes_affected = 2;          // Two bytes
-                out_potential++;
-            }
-            cur_mark++;
-        }
 
         // Build a "most frequent values" table so we can load things into data registers when possible
         // We could be lazy and just use a huge table which would lead to tons of wasted RAM but let's not do that
@@ -1200,25 +1186,9 @@ void halve_it()
             }
         }
 
-        // Anything that remains from the above passes we can safely assume that falls under the and.w/or.w case
-        // TODO: shouldn't this be moved before the frequency table buildup?
-        // TODO: shouldn't this be moved before the frequency table buildup?
-        // TODO: shouldn't this be moved before the frequency table buildup?
-        // TODO: shouldn't this be moved before the frequency table buildup?
-        // TODO: shouldn't this be moved before the frequency table buildup?
-        // TODO: shouldn't this be moved before the frequency table buildup?
-        // TODO: shouldn't this be moved before the frequency table buildup?
-        // TODO: shouldn't this be moved before the frequency table buildup?
-        // TODO: shouldn't this be moved before the frequency table buildup?
-        // TODO: shouldn't this be moved before the frequency table buildup?
-        // TODO: shouldn't this be moved before the frequency table buildup?
-        // TODO: shouldn't this be moved before the frequency table buildup?
-        // TODO: shouldn't this be moved before the frequency table buildup?
-        // TODO: shouldn't this be moved before the frequency table buildup?
-        // TODO: shouldn't this be moved before the frequency table buildup?
-        // TODO: shouldn't this be moved before the frequency table buildup?
-        // TODO: shouldn't this be moved before the frequency table buildup?
-        dprintf("\nStray and.w/or.w\n----------------\n");
+        // Anything that remains from the above passes we can safely assume that falls under the and.w/or.w/move.w #xxx,d(An) case
+        // TODO: Hmmm, since a2-a6 aren't going to be used by and/or then we could use them for move.w
+        dprintf("\nStray and.w/or.w/move.w\n-----------------------\n");
         cur_mark = mark_buf;
         loop_count = num_actions - 1;
         do
@@ -1249,10 +1219,22 @@ void halve_it()
                     dprintf("ori.w  #$%04x,$%04x(a1)\n", cur_mark->value_or, cur_mark->offset);
                 }
                 cur_mark->action = A_DONE;
-
+            }
+            if (cur_action == A_MOVE)
+            {
+                dprintf("move.w #$%04x,$%04x(a1)\n", cur_mark->value_or, cur_mark->offset);
+                // Let's not mark the actions as done yet, the values could be used in the frequency table
+                cur_mark->action = A_DONE;
+                out_potential->base_instruction = MOVEI_W;  // move.w #xxx,
+                out_potential->ea = EA_MOVE_D_A1;                  // d(a1)
+                out_potential->screen_offset = cur_mark->offset;
+                out_potential->value = cur_mark->value_or;
+                out_potential->bytes_affected = 2;          // Two bytes
+                out_potential++;
             }
             cur_mark++;
         } while (--loop_count != -1);
+
 
 
         // It's almost time to output the shifted frame's code and data.
@@ -1509,7 +1491,18 @@ void halve_it()
         bprintf("; Total savings               : %i\n", cycles_saved_from_movem_l + cycles_saved_from_movem_w + cycles_saved_from_movep + cycles_saved_from_and_l_or_l + cycles_saved_from_registers + cycles_saved_from_post_increment);
         bprintf("; Final number of cycles      : %i\n", cycles_unoptimised - (cycles_saved_from_movem_l + cycles_saved_from_movem_w + cycles_saved_from_movep + cycles_saved_from_and_l_or_l + cycles_saved_from_registers + cycles_saved_from_post_increment));
 #endif
-        cprintf("sprite_code_shift_%i:\n", shift);
+        if (shift < 16)
+        {
+            cprintf("sprite_code_shift_%i:\n", shift);
+        }
+        else if (shift < sprite_width-1)
+        {
+            cprintf("sprite_code_clip_left_%i:\n", shift - 16);
+        }
+        else
+        {
+            cprintf("sprite_code_clip_right_%i:\n", shift - (sprite_width - 1));
+        }
 
         // We need to load a0 with the sprite data
         // Safe to assume that there will be data, hopefully!
@@ -1564,42 +1557,42 @@ void halve_it()
 #ifdef PRINT_CODE
             switch (out_potential->base_instruction)
             {
-            case MOVEM_L_FROM_REG:
-                printf("movem.l ");
-                break;
-            case MOVEM_W_FROM_REG:
-                printf("movem.w ");
-                break;
+            //case MOVEM_L_FROM_REG:
+            //    fprintf(code_file, "movem.l ");
+            //    break;
+            //case MOVEM_W_FROM_REG:
+            //    fprintf(code_file, "movem.w ");
+            //    break;
             case MOVEI_W:
-                printf("move.w ");
+                fprintf(code_file, "move.w ");
                 break;
             case ANDI_W:
-                printf("andi.w ");
+                fprintf(code_file, "andi.w ");
                 break;
             case ORI_W:
-                printf("ori.w ");
+                fprintf(code_file, "ori.w ");
                 break;
             case MOVEI_L:
-                printf("move.l ");
+                fprintf(code_file, "move.l ");
                 break;
             case ANDI_L:
-                printf("andi.l ");
+                fprintf(code_file, "andi.l ");
                 break;
             case ORI_L:
-                printf("ori.l ");
+                fprintf(code_file, "ori.l ");
                 break;
             default:
                 if ((out_potential->base_instruction & 0xffc0) == MOVED_W)
                 {
-                    printf("move.w d%i,", out_potential->base_instruction & 7);
+                    fprintf(code_file, "move.w d%i,", out_potential->base_instruction & 7);
                 }
                 else if ((out_potential->base_instruction & 0xf1ff) == ANDD_W)
                 {
-                    printf("and.w d%i,", (out_potential->base_instruction >> 9) & 7);
+                    fprintf(code_file, "and.w d%i,", (out_potential->base_instruction >> 9) & 7);
                 }
                 else if ((out_potential->base_instruction & 0xf1ff) == ORD_W)
                 {
-                    printf("or.w d%i,", (out_potential->base_instruction >> 9) & 7);
+                    fprintf(code_file, "or.w d%i,", (out_potential->base_instruction >> 9) & 7);
                 }
                 else if ((out_potential->base_instruction & 0xffff0000) == MOVEM_L_TO_REG)
                 {
@@ -1610,15 +1603,15 @@ void halve_it()
                     c = ((v + (v >> 4) & 0xF0F0F0F) * 0x1010101) >> 24; // count
                     if (c <= 8)
                     {
-                        printf("movem.l (a0)+,d0-d%i\n", c);
+                        fprintf(code_file, "movem.l (a0)+,d0-d%i\n", c - 1);
                     }
                     else if (c == 9)
                     {
-                        printf("movem.l (a0)+,d0-d7/a2\n");
+                        fprintf(code_file, "movem.l (a0)+,d0-d7/a2\n");
                     }
                     else
                     {
-                        printf("movem.l (a0)+,d0-d7/a2-%i\n", c - 8);
+                        fprintf(code_file, "movem.l (a0)+,d0-d7/a2-a%i\n", c - 8 - 1);
                     }
                 }
                 else if ((out_potential->base_instruction & 0xffff0000) == MOVEM_L_FROM_REG)
@@ -1630,15 +1623,15 @@ void halve_it()
                     c = ((v + (v >> 4) & 0xF0F0F0F) * 0x1010101) >> 24; // count
                     if (c <= 8)
                     {
-                        printf("movem.l d0-d7/a2-%i,", c);
+                        fprintf(code_file, "movem.l d0-d7/a2-a%i,", c - 1);
                     }
                     else if (c == 9)
                     {
-                        printf("movem.l d0-d7/a2,");
+                        fprintf(code_file, "movem.l d0-d7/a2,");
                     }
                     else
                     {
-                        printf("movem.l d0-d7/a2-%i,", c - 8);
+                        fprintf(code_file, "movem.l d0-d7/a2-a%i,", c - 8 - 1);
                     }
                 }
                 else if ((out_potential->base_instruction & 0xffff0000) == MOVEM_W_TO_REG)
@@ -1648,7 +1641,7 @@ void halve_it()
                     v = v - ((v >> 1) & 0x55555555);                    // reuse input as temporary
                     v = (v & 0x33333333) + ((v >> 2) & 0x33333333);     // temp
                     c = ((v + (v >> 4) & 0xF0F0F0F) * 0x1010101) >> 24; // count
-                    printf("movem.w (a0)+,d0-d%i\n",c-1);
+                    fprintf(code_file, "movem.w (a0)+,d0-d%i\n", c - 1);
                 }
                 else if ((out_potential->base_instruction & 0xffff0000) == MOVEM_W_FROM_REG)
                 {
@@ -1657,11 +1650,11 @@ void halve_it()
                     v = v - ((v >> 1) & 0x55555555);                    // reuse input as temporary
                     v = (v & 0x33333333) + ((v >> 2) & 0x33333333);     // temp
                     c = ((v + (v >> 4) & 0xF0F0F0F) * 0x1010101) >> 24; // count
-                    printf("movem.w d0-d%i,", c-1);
+                    fprintf(code_file, "movem.w d0-d%i,", c - 1);
                 }
                 else
                 {
-                    printf("wat? $%04x", out_potential->base_instruction);
+                    fprintf(code_file, "wat? $%04x", out_potential->base_instruction);
                 }
                 break;
             }
@@ -1753,7 +1746,7 @@ void halve_it()
         
         U16 *read_sprite_data=sprite_data;
 #ifdef PRINT_CODE
-        printf("sprite_data_shift_%i:\ndc.w ", shift);
+        fprintf(code_file, "sprite_data_shift_%i:\ndc.w ", shift);
         j = 0;
         for (i = write_sprite_data - sprite_data - 1; i >= 0; i--)
         {
@@ -1761,11 +1754,11 @@ void halve_it()
             {
                 if (i != 0)
                 {
-                    printf("$%04x,", *read_sprite_data++);
+                    fprintf(code_file, "$%04x,", *read_sprite_data++);
                 }
                 else
                 {
-                    printf("$%04x\n", *read_sprite_data++);
+                    fprintf(code_file, "$%04x\n", *read_sprite_data++);
                 }
                 j++;
             }
@@ -1774,12 +1767,12 @@ void halve_it()
                 j = 0;
                 if (i != 0)
                 {
-                    printf("$%04x\ndc.w ", *read_sprite_data++);
+                    fprintf(code_file, "$%04x\ndc.w ", *read_sprite_data++);
                 }
                 else
                 {
                     // Corner case, if last word to be output is at the end of a printed line, don't print spurious "dc.w"
-                    printf("$%04x\n", *read_sprite_data++);
+                    fprintf(code_file, "$%04x\n", *read_sprite_data++);
                 }
             }
 
@@ -1794,6 +1787,8 @@ void halve_it()
         //
         // Prepare for next frame
         //
+
+        clear((U16 *)potential, sizeof(potential));
 
         // Shift screen by one place right
         // Where's 68000's roxl when you need it, right?
@@ -1840,7 +1835,7 @@ void halve_it()
         {
             // Only execute the following if we have any clipping to do
             // (so if horizontal_clip is a static value at compile time this will not generate any code at all)
-            if (shift < 16 + sprite_width - 1)
+            if (shift < 16 + (sprite_width - 16) - 1)
             {
                 if (shift == 16 - 1)
                 {
@@ -1888,7 +1883,7 @@ void halve_it()
             }
             else
             {
-                if (shift == 16 + sprite_width - 1)
+                if (shift == 16 + (sprite_width - 16) - 1)
                 {
                     // Let's bring back a fresh copy of the sprite, but shifted 16 pixels right. This way the right hand side will be at the edge of the extra word for shifting
                     // Mask will be generated and shifted at the start of next iteration
@@ -1913,7 +1908,7 @@ void halve_it()
                     // Advance to next scanline
                     buf = buf + (screen_width / (16 / screen_planes));
                 }
-                if (shift != 16 + sprite_width - 1)
+                if (shift != 16 + (sprite_width - 16) - 1)
                 {
                     // Shift the mask too if it's not the first clipping iteration
                     // (first clipping iteration is handled at the start of the loop, because we need to regenerate the mask there)
@@ -1963,6 +1958,10 @@ int main(int argc, char ** argv)
     fclose(sprite);
 #endif
 
+#ifdef PRINT_CODE
+    code_file = fopen("code.s", "w");
+#endif
+
     // Byte swap the array if little endian
     if (endian.little)
     {
@@ -1976,5 +1975,10 @@ int main(int argc, char ** argv)
     }
 
     halve_it();
+
+#ifdef PRINT_CODE
+    fclose(code_file);
+#endif
+
     return 0;
 }
