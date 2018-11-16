@@ -107,7 +107,7 @@ using namespace brown;
 #define ORI_L               0x80
 #define ANDI_W              0x240
 #define ORI_W               0x40
-#define MOVED_W             0x2000
+#define MOVED_W             0x3000
 #define ORD_W               0x8140
 #define ANDD_W              0xc140
 #define ADDQ_A1             0x5049
@@ -420,7 +420,7 @@ void halve_it()
         cycles_saved_from_post_increment = 0;
 #endif
 
-        if (shift == 0 || (shift_count > 16 && (shift == 16 || shift == 16 + (sprite_width-32) - 1)))
+        if (shift == 0 || (shift_count > 16 && (shift == 16 || shift == 16 + (sprite_width - 16))))
         {
             // Prepare mask at the first iteration
             // Also when generate clipping code at the respective starts, once for shifting left and once for shifting right
@@ -667,6 +667,26 @@ void halve_it()
             val_and = *mask;
             plane_counter = 0;
 
+        }
+
+        if (num_actions == 0)
+        {
+            // Nothing to do for this frame, so skip it
+            *write_code++ = RTS;
+            if (shift < 16)
+            {
+                cprintf("sprite_code_shift_%i:\n", shift);
+            }
+            else if (shift < sprite_width - 1)
+            {
+                cprintf("sprite_code_clip_left_%i:\n", shift - 16);
+            }
+            else
+            {
+                cprintf("sprite_code_clip_right_%i:\n", shift - (sprite_width - 1));
+            }
+            cprintf("rts\n");
+            goto skip_frame;
         }
 
         // Step 2: Try to optimise the actions recorded in step 1
@@ -1789,8 +1809,9 @@ void halve_it()
         //
 
         clear((U16 *)potential, sizeof(potential));
+    skip_frame:
 
-        // Shift screen by one place right
+        // Shift sprite by one place right
         // Where's 68000's roxl when you need it, right?
         if (shift < 15)
         {
@@ -1819,8 +1840,8 @@ void halve_it()
             {
                 // Point to the end of the scanline as we'll shift from right to left
                 // Our counters and offsets here are (sprite_words+1) due to the fact that sprite_words counts sprite words without the extra word for shifting
-                U16 *line_mask = mask + ((sprite_words + 1) - 1);
-                for (x = 0; x < (sprite_words + 1) - 1; x++)
+                U16 *line_mask = mask + (sprite_words - 1);
+                for (x = 0; x < sprite_words - 1; x++)
                 {
                     *line_mask = ((line_mask[-1] & 1) << 15) | (*line_mask >> 1);
                     line_mask--;
@@ -1833,6 +1854,7 @@ void halve_it()
         }
         else if (horizontal_clip)
         {
+            buf = (U16 *)buf_shift;
             // Only execute the following if we have any clipping to do
             // (so if horizontal_clip is a static value at compile time this will not generate any code at all)
             if (shift < 16 + (sprite_width - 16) - 1)
@@ -1848,11 +1870,11 @@ void halve_it()
                 {
                     for (plane_counter = 0; plane_counter < screen_planes; plane_counter++)
                     {
-                        // Point to the end of the scanline as we'll shift from right to left
-                        U16 *line_buf = buf;
+                        // Point to the start of the scanline as we'll shift from left to right
+                        U16 *line_buf = buf + plane_counter;
                         for (x = 0; x < sprite_words; x++)
                         {
-                            *line_buf = (*line_buf << 1) | ((line_buf[screen_planes] & 1) >> 15);
+                            *line_buf = (*line_buf << 1) | ((line_buf[screen_planes] >>15) &1);
                             line_buf = line_buf + screen_planes;
                         }
                     }
@@ -1866,16 +1888,15 @@ void halve_it()
                     mask = (U16 *)buf_mask;
                     for (y = 0; y < sprite_height; y++)
                     {
-                        // Point to the end of the scanline as we'll shift from right to left
-                        // Our counters and offsets here are (sprite_words+1) due to the fact that sprite_words counts sprite words without the extra word for shifting
+                        // Point to the start of the scanline as we'll shift from left to right
                         U16 *line_mask = mask;
-                        for (x = 0; x < (sprite_words + 1) - 1; x++)
+                        for (x = 0; x < sprite_words - 1; x++)
                         {
-                            *line_mask = (*line_mask << 1)|((line_mask[1] & 1) >> 15);
+                            *line_mask = (*line_mask << 1) | ((line_mask[1] >> 15) & 1);
                             line_mask++;
                         }
                         // Last word of the scanline - we also have to generate a "1" at the rightmost pixel since this is a mask and we'll be shifting it one place to the right
-                        *line_mask = (*line_mask >> 1) | 1;
+                        *line_mask = (*line_mask << 1) | 1;
                         // Advance to next scanline
                         mask = mask + screen_plane_words;
                     }
@@ -1885,19 +1906,18 @@ void halve_it()
             {
                 if (shift == 16 + (sprite_width - 16) - 1)
                 {
-                    // Let's bring back a fresh copy of the sprite, but shifted 16 pixels right. This way the right hand side will be at the edge of the extra word for shifting
+                    // Let's bring back a fresh copy of the sprite, but shifted 16 pixels right
                     // Mask will be generated and shifted at the start of next iteration
-                    copy((U32 *)buf_origsprite, (U32 *)(((U8 *)buf_shift) + screen_planes * 2), BUFFER_SIZE - (screen_planes * 2));
+                    copy((U32 *)buf_origsprite, (U32 *)buf_shift, BUFFER_SIZE);
                 }
                 // Clipping to the right (for example sprite's top left x > screen_width minus sprite_width)
-                // TODO: this should be indentical with shift<15 case - any way to combine them without causing the source to be tangled inside if statements?
                 for (y = 0; y < sprite_height; y++)
                 {
                     for (plane_counter = 0; plane_counter < screen_planes; plane_counter++)
                     {
                         // Point to the end of the scanline as we'll shift from right to left
-                        U16 *line_buf = buf + (sprite_words - 1)*screen_planes + plane_counter;
-                        for (x = 0; x < sprite_words - 1; x++)
+                        U16 *line_buf = buf + (sprite_words - 1 - 1)*screen_planes + plane_counter;
+                        for (x = 0; x < sprite_words - 1 - 1; x++)
                         {
                             *line_buf = ((line_buf[-screen_planes] & 1) << 15) | (*line_buf >> 1);
                             line_buf = line_buf - screen_planes;
@@ -1917,8 +1937,8 @@ void halve_it()
                     {
                         // Point to the end of the scanline as we'll shift from right to left
                         // Our counters and offsets here are (sprite_words+1) due to the fact that sprite_words counts sprite words without the extra word for shifting
-                        U16 *line_mask = mask + ((sprite_words + 1) - 1);
-                        for (x = 0; x < (sprite_words + 1) - 1; x++)
+                        U16 *line_mask = mask + (sprite_words - 1);
+                        for (x = 0; x < sprite_words - 1; x++)
                         {
                             *line_mask = ((line_mask[-1] & 1) << 15) | (*line_mask >> 1);
                             line_mask--;

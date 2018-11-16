@@ -37,6 +37,7 @@ copyline:       movem.l (A0),D0-D6
 ;                bsr     sprite_code_shift_0
 
                 lea a,a6
+;                lea 17*4(a6),a6
                 move.w #16+31+31-1,loop_count
 
 draw_loop:      movea.l screen,A1
