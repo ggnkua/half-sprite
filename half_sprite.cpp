@@ -508,6 +508,7 @@ void halve_it()
             {
 
                 // If we don't have to mask any bit, then skip all bitplanes
+                // TODO: this is lazy and wastes cycles as this piece of code and skipword will execute as many times as there are planes
                 if (val_and == 0xffff)
                 {
                     goto skipword;
@@ -530,13 +531,16 @@ void halve_it()
                             cur_mark++;
                             num_actions++;
                         }
+#ifdef CYCLES_REPORT
+                        cycles_unoptimised = cycles_unoptimised + 20;   // and.w #xxx,d(An)
+#endif
                     }
-                    if (val_and)
+                    else if (val_and)
                     {
                         // Special case where we just need to mask something
                         // because the user supplied their own mask
                         // TODO this could happen if we outlined the mask I guess?
-                        cur_mark->action = A_MOVE;
+                        cur_mark->action = A_AND;
                         cur_mark->offset = off;
                         cur_mark->value_or = 0;
                         cur_mark->value_and = val_and;
@@ -544,7 +548,7 @@ void halve_it()
                         num_actions++;
                         goto skipword;
 #ifdef CYCLES_REPORT
-                        cycles_unoptimised = cycles_unoptimised + 12;   // move.w #xxx,d(An)
+                        cycles_unoptimised = cycles_unoptimised + 20;   // and.w #xxx,d(An)
 #endif
                     }
                     // Nothing to draw here, skip word
@@ -565,7 +569,7 @@ void halve_it()
                         cur_mark->action = A_MOVE;
                         cur_mark->value_and = 0;
 #ifdef CYCLES_REPORT
-                        cycles_unoptimised = cycles_unoptimised + 12;   // move.w #xxx,d(An)
+                        cycles_unoptimised = cycles_unoptimised + 16;   // move.w #xxx,d(An)
 #endif
                     }
                     else if ((val_or | val_and) == 0xffff)
@@ -575,7 +579,7 @@ void halve_it()
                         cur_mark->action = A_OR;
                         cur_mark->value_and = 0;
 #ifdef CYCLES_REPORT
-                        cycles_unoptimised = cycles_unoptimised + 16;   // ori.w #xxx,d(An)
+                        cycles_unoptimised = cycles_unoptimised + 20;   // ori.w #xxx,d(An)
 #endif
                     }
                     else
@@ -584,7 +588,7 @@ void halve_it()
                         cur_mark->action = A_AND_OR;
                         cur_mark->value_and = val_and;
 #ifdef CYCLES_REPORT
-                        cycles_unoptimised = cycles_unoptimised + 24;   // andi.w #xxx,d(An) / ori.w #yyy,d(An)
+                        cycles_unoptimised = cycles_unoptimised + 40;   // andi.w #xxx,d(An) / ori.w #yyy,d(An)
 #endif
                     }
                 }
@@ -594,7 +598,7 @@ void halve_it()
                     cur_mark->action = A_OR;
                     cur_mark->value_and = 0;
 #ifdef CYCLES_REPORT
-                    cycles_unoptimised = cycles_unoptimised + 12;   // move.w #xxx,d(An)
+                    cycles_unoptimised = cycles_unoptimised + 20;   // or.w #xxx,d(An)
 #endif
                 }
                 num_actions++;
@@ -1012,13 +1016,12 @@ void halve_it()
                 {
                     if (cur_mark[1].action & A_AND && cur_mark[1].offset - cur_mark->offset == 2)
                     {
-                        cur_mark->action = A_DONE;
-
                         out_potential->base_instruction = ANDI_L;   // andi.l #xxx,
                         out_potential->ea = EA_D_A1;                // d(a1)
                         out_potential->screen_offset = cur_mark->offset;
                         out_potential->value = (cur_mark->value_and << 16) | (cur_mark[1].value_and & 0xffff);
                         out_potential->bytes_affected = 4;          // One longword s'il vous plait
+                        cur_mark->action = A_DONE;
                         dprintf("andi.w #$%04x,$%04x(a1) - andi.w #$%04x,$%04x(a1) -> andi.l #$%08x,$%04x(a1)\n", cur_mark->value_and, cur_mark->offset, cur_mark[1].value_and, cur_mark[1].offset, out_potential->value, cur_mark->offset);
                         out_potential++;
                         cur_mark++;
@@ -1039,6 +1042,7 @@ void halve_it()
                     out_potential->screen_offset = cur_mark->offset;
                     out_potential->value = (cur_mark->value_or << 16) | (cur_mark[1].value_or & 0xffff);
                     out_potential->bytes_affected = 4;              // One longword s'il vous plait
+                    cur_mark->action = A_DONE;
                     dprintf("ori.w  #$%04x,$%04x(a1) - ori.w  #$%04x,$%04x(a1) -> ori.l  #$%08x,$%04x(a1)\n", cur_mark->value_or, cur_mark->offset, cur_mark[1].value_or, cur_mark[1].offset, out_potential->value, cur_mark->offset);
                     out_potential++;
                     cur_mark++;
