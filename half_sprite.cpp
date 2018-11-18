@@ -1244,6 +1244,38 @@ void halve_it()
             {
                 if (cur_value == cached_values[i])
                 {
+#if 1
+                    if ((i & 1) == 1)
+                    {
+                        // Low word required. Does the data register have that?
+                        if (swaptable[i >> 1] == 0)
+                        {
+                            // Yup, no worries
+                        }
+                        else
+                        {
+                            // Well we already SWAPped once, game over
+                            goto do_not_optimise_register;
+                        }
+                    }
+                    else
+                    {
+                        // High word required. Do we have that?
+                        if (swaptable[i >> 1] == 1)
+                        {
+                            // Yup, no problems
+                        }
+                        else
+                        {
+                            dprintf("swap d%i\n", i >> 1);
+                            swaptable[i >> 1] = 1;
+                            out_potential->value |= EMIT_SWAP;
+#ifdef CYCLES_REPORT
+                            cycles_saved_from_registers = cycles_saved_from_registers - 4;  // Negative gain!
+#endif
+                        }
+                    }
+#else
                     if ((i & 1) == 0)
                     {
                         // We need the high word of the register
@@ -1281,6 +1313,7 @@ void halve_it()
                             // The register is already swapped, do nothing
                         }
                     }
+#endif
                     switch (out_potential->base_instruction)
                     {
                     case MOVEI_W:
@@ -1307,8 +1340,10 @@ void halve_it()
                         cycles_saved_from_registers = cycles_saved_from_registers + 4;
 #endif
                         break;
-
                     }
+                do_not_optimise_register:
+                    // I hope this compiles to nothing. At least in VS2017 defining the label above without any instructions before the end of the scope results in a compile error...
+                    cycles_saved_from_registers;
                 }
             }
         }
