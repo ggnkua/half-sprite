@@ -530,10 +530,25 @@ void halve_it()
                             cur_mark->value_and = val_and;
                             cur_mark++;
                             num_actions++;
-                        }
 #ifdef CYCLES_REPORT
-                        cycles_unoptimised = cycles_unoptimised + 20;   // and.w #xxx,d(An)
+                            cycles_unoptimised = cycles_unoptimised + 20;   // and.w #xxx,d(An)
 #endif
+                            goto skipword;
+                        }
+                        else if (val_and==0 && plane_counter<num_mask_planes)
+                        {
+                            // OR value and AND value is 0, so we just need to MOVE a zero in this address
+                            cur_mark->action = A_MOVE;
+                            cur_mark->offset = off;
+                            cur_mark->value_or = 0;
+                            cur_mark->value_and = 0;
+                            cur_mark++;
+                            num_actions++;
+#ifdef CYCLES_REPORT
+                            cycles_unoptimised = cycles_unoptimised + 16;   // move.w #xxx,d(An)
+#endif
+                            goto skipword;
+                        }
                     }
                     else if (val_and)
                     {
@@ -546,6 +561,9 @@ void halve_it()
                         cur_mark->value_and = val_and;
                         cur_mark++;
                         num_actions++;
+#ifdef CYCLES_REPORT
+                        cycles_unoptimised = cycles_unoptimised + 20;   // and.w #xxx,d(An)
+#endif
                         goto skipword;
 #ifdef CYCLES_REPORT
                         cycles_unoptimised = cycles_unoptimised + 20;   // and.w #xxx,d(An)
@@ -1493,12 +1511,13 @@ void halve_it()
         bprintf("; Non-optimal number of cycles: %i\n", cycles_unoptimised);
         bprintf("; Savings from movem.l        : %i\n", cycles_saved_from_movem_l);
         bprintf("; Savings from movem.w        : %i\n", cycles_saved_from_movem_w);
+        bprintf("; Savings from move.l         : %i\n", cycles_saved_from_move_l);
         bprintf("; Savings from movep          : %i\n", cycles_saved_from_movep);
         bprintf("; Savings from and.l/or.l     : %i\n", cycles_saved_from_and_l_or_l);
         bprintf("; Savings from registers      : %i\n", cycles_saved_from_registers);
         bprintf("; Savings from post increments: %i\n", cycles_saved_from_post_increment);
-        bprintf("; Total savings               : %i\n", cycles_saved_from_movem_l + cycles_saved_from_movem_w + cycles_saved_from_movep + cycles_saved_from_and_l_or_l + cycles_saved_from_registers + cycles_saved_from_post_increment);
-        bprintf("; Final number of cycles      : %i\n", cycles_unoptimised - (cycles_saved_from_movem_l + cycles_saved_from_movem_w + cycles_saved_from_movep + cycles_saved_from_and_l_or_l + cycles_saved_from_registers + cycles_saved_from_post_increment));
+        bprintf("; Total savings               : %i\n", cycles_saved_from_movem_l + cycles_saved_from_movem_w + cycles_saved_from_move_l + cycles_saved_from_movep + cycles_saved_from_and_l_or_l + cycles_saved_from_registers + cycles_saved_from_post_increment);
+        bprintf("; Final number of cycles      : %i\n", cycles_unoptimised - (cycles_saved_from_movem_l + cycles_saved_from_movem_w + cycles_saved_from_move_l + cycles_saved_from_movep + cycles_saved_from_and_l_or_l + cycles_saved_from_registers + cycles_saved_from_post_increment));
 #endif
         if (shift < 16)
         {
