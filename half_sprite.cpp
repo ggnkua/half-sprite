@@ -50,6 +50,8 @@
 
 // Started 19 Octomber 2018 20:30
 
+#define PRINT_CODE
+#define CYCLES_REPORT
 //#define PRINT_DEBUG
 
 #include <assert.h>
@@ -242,13 +244,7 @@ void qsort(FREQ *base, S16 nmemb)
                 b--; /* Look for one <= middle */
             if (a >= b)
                 break; /* We found no pair */
-            //for (i = 0; i < size; i++) /* swap them */
-            //{
-            //    FREQ tmp = base[a + i];
-            //    base[a + i] = base[b + i];
-            //    base[b + i] = tmp;
-            //}
-            FREQ tmp = base[a];
+            FREQ tmp = base[a]; /* swap them */
             base[a] = base[b];
             base[b] = tmp;
             if (c == a) /* Keep track of middle element */
@@ -298,6 +294,7 @@ void halve_it()
     int generate_mask = 1;              // Should we auto generate mask or will user supply his/her own?
     int outline_mask = 0;               // Should we outline mask?
     int horizontal_clip = 1;            // Should we output code that enables horizontal clip for x<0 and x>screen_width-sprite_width? (this can lead to HUGE amounts of outputted code depending on sprite width!)
+    int generate_background_save_restore_code = 0;
     short i, j, k;
     short loop_count;
     U16 *write_code = output_buf;
@@ -420,7 +417,7 @@ void halve_it()
         cycles_saved_from_post_increment = 0;
 #endif
 
-        if (shift == 0 || (shift_count > 16 && (shift == 16 || shift == 16 + (sprite_width - 16))))
+        if (shift == 0 || (shift_count > 16 && (shift == 16 || shift == 16 + (sprite_width - 16) - 1)))
         {
             // Prepare mask at the first iteration
             // Also when generate clipping code at the respective starts, once for shifting left and once for shifting right
@@ -428,7 +425,7 @@ void halve_it()
             {
                 if (generate_mask)
                 {
-                    U16 *src = (U16 *)buf_origsprite;
+                    U16 *src = (U16 *)buf_shift;
                     U16 *mask = (U16 *)buf_mask;
                     U16 x, y;
                     for (y = 0; y < sprite_height; y++)
@@ -488,53 +485,6 @@ void halve_it()
                 else
                 {
                     // TODO: copy the mask from the user supplied one
-                }
-            }
-            // When we get to the clipping cases we need to shift the mask once left or right the first time
-            // If you think about it, we already covered cases where the sprite is shifted 0 to 15 pixels
-            // so we only need (sprite_width-1) shifts for each clipping case. If we outputted sprite_width
-            // we'd just duplicate the normal sprite case where shift=0
-            if (shift_count > 16)
-            {
-
-                if (shift == 16)
-                {
-                    // Shift the mask left once
-                    mask = (U16 *)buf_mask;
-                    for (y = 0; y < sprite_height; y++)
-                    {
-                        // Point to the start of the scanline as we'll shift from left to right
-                        U16 *line_mask = mask;
-                        for (x = 0; x < sprite_words - 1; x++)
-                        {
-                            *line_mask = (*line_mask << 1) | ((line_mask[1] & 1) >> 15);
-                            line_mask++;
-                        }
-                        // Last word of the scanline - we also have to generate a "1" at the rightmost pixel since this is a mask and we'll be shifting it one place to the right
-                        *line_mask = (*line_mask << 1) | 1;
-                        // Advance to next scanline
-                        mask = mask + screen_plane_words;
-                    }
-
-                }
-                else if (shift == 16 + (sprite_width - 16))
-                {
-                    // Shift the mask right once
-                    mask = (U16 *)buf_mask;
-                    for (y = 0; y < sprite_height; y++)
-                    {
-                        // Point to the end of the scanline as we'll shift from right to left
-                        U16 *line_mask = mask + ((sprite_words + 1) - 1);
-                        for (x = 0; x < (sprite_words + 1) - 1; x++)
-                        {
-                            *line_mask = ((line_mask[-1] & 1) << 15) | (*line_mask >> 1);
-                            line_mask--;
-                        }
-                        // First word of the scanline - we also have to generate a "1" at the leftmost pixel since this is a mask and we'll be shifting it one place to the right
-                        *line_mask = (1 << 15) | (*line_mask >> 1);
-                        // Advance to next scanline
-                        mask = mask + screen_plane_words;
-                    }
                 }
             }
         }
@@ -1504,7 +1454,7 @@ void halve_it()
         bprintf("; Non-optimal number of cycles: %i\n", cycles_unoptimised);
         bprintf("; Savings from movem.l        : %i\n", cycles_saved_from_movem_l);
         bprintf("; Savings from movem.w        : %i\n", cycles_saved_from_movem_w);
-        bprintf("; Savings from movemp         : %i\n", cycles_saved_from_movep);
+        bprintf("; Savings from movep          : %i\n", cycles_saved_from_movep);
         bprintf("; Savings from and.l/or.l     : %i\n", cycles_saved_from_and_l_or_l);
         bprintf("; Savings from registers      : %i\n", cycles_saved_from_registers);
         bprintf("; Savings from post increments: %i\n", cycles_saved_from_post_increment);
@@ -1857,7 +1807,7 @@ void halve_it()
             buf = (U16 *)buf_shift;
             // Only execute the following if we have any clipping to do
             // (so if horizontal_clip is a static value at compile time this will not generate any code at all)
-            if (shift < 16 + (sprite_width - 16) - 1)
+            if (shift < 16 + (sprite_width - 16) - 1 - 1)
             {
                 if (shift == 16 - 1)
                 {
@@ -1874,7 +1824,7 @@ void halve_it()
                         U16 *line_buf = buf + plane_counter;
                         for (x = 0; x < sprite_words; x++)
                         {
-                            *line_buf = (*line_buf << 1) | ((line_buf[screen_planes] >>15) &1);
+                            *line_buf = (*line_buf << 1) | ((line_buf[screen_planes] >> 15) & 1);
                             line_buf = line_buf + screen_planes;
                         }
                     }
@@ -1904,7 +1854,7 @@ void halve_it()
             }
             else
             {
-                if (shift == 16 + (sprite_width - 16) - 1)
+                if (shift == 16 + (sprite_width - 16) - 1 - 1)
                 {
                     // Let's bring back a fresh copy of the sprite, but shifted 16 pixels right
                     // Mask will be generated and shifted at the start of next iteration
@@ -1928,7 +1878,7 @@ void halve_it()
                     // Advance to next scanline
                     buf = buf + (screen_width / (16 / screen_planes));
                 }
-                if (shift != 16 + (sprite_width - 16) - 1)
+                if (shift != 16 + (sprite_width - 16) - 1 - 1)
                 {
                     // Shift the mask too if it's not the first clipping iteration
                     // (first clipping iteration is handled at the start of the loop, because we need to regenerate the mask there)
@@ -1938,7 +1888,8 @@ void halve_it()
                         // Point to the end of the scanline as we'll shift from right to left
                         // Our counters and offsets here are (sprite_words+1) due to the fact that sprite_words counts sprite words without the extra word for shifting
                         U16 *line_mask = mask + (sprite_words - 1);
-                        for (x = 0; x < sprite_words - 1; x++)
+                        *line_mask-- = 0xffff;
+                        for (x = 0; x < sprite_words - 1 - 1; x++)
                         {
                             *line_mask = ((line_mask[-1] & 1) << 15) | (*line_mask >> 1);
                             line_mask--;
