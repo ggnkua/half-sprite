@@ -208,6 +208,18 @@ static inline void clear(U16 *data, S32 size)
     } while (--size >= 0);
 }
 
+// Count bits, snippet from https://graphics.stanford.edu/~seander/bithacks.html#CountBitsSetParallel
+#ifdef PRINT_CODE
+static inline U32 count_bits(U32 v)
+{
+    U32 c;
+    v = v - ((v >> 1) & 0x55555555);                    // reuse input as temporary
+    v = (v & 0x33333333) + ((v >> 2) & 0x33333333);     // temp
+    c = (((v + (v >> 4)) & 0xF0F0F0F) * 0x1010101) >> 24; // count
+    return c;
+}
+#endif
+
 // Code for qsort obtained from https://code.google.com/p/propgcc/source/browse/lib/stdlib/qsort.c
 
 /*
@@ -498,6 +510,21 @@ void halve_it()
         out_potential = potential;                      // Reset potential moves pointer
         *write_pointers++ = write_code - output_buf;    // Mark down the entry point for this routine
         U16 *write_sprite_data = sprite_data;
+        MARK *marks_end;                                // End of marks buffer
+        U16 mark_to_search_for;
+        S16 num_freqs;
+        POTENTIAL_CODE *cacheable_code;
+        U16 *cached_values;
+        U16 *write_arranged_values;
+        POTENTIAL_CODE *potential_end;
+        U16 swaptable[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };                 // SWAP state of registers
+        U32 prev_offset;
+        U16 distance_between_actions;
+        short consecutive_instructions;
+        U16 *lea_patch_address;
+        U16 lea_offset;
+        U16 *read_sprite_data;
+        U16 *first_lea_offset;
 
         // Step 1: determine what actions we need to perform
         //         in order to draw the sprite on screen
@@ -680,7 +707,7 @@ void halve_it()
         // TODO: maybe we could keep a number A_MOVE generated in step 1 and skip this whole chunk if it's 0?
         
         dprintf("\nmovem.l optimisations\n---------------------\n");
-        MARK *marks_end = cur_mark;           // Save end of marks buffer
+        marks_end = cur_mark;           // Save end of marks buffer
         cur_mark = mark_buf;
         MARK *temp_mark;
         U16 temp_off_first;
@@ -865,7 +892,6 @@ void halve_it()
 
         dprintf("\nmove.l optimisations\n--------------------\n");
         cur_mark = mark_buf;
-        S32 num_movel = 0;
         for (i = num_actions - 1 - 1; i >= 0; i--)
         {
             if (cur_mark->action == A_MOVE)
@@ -890,8 +916,6 @@ void halve_it()
 
                     cur_mark++;
                     cur_mark->action = A_DONE;
-
-                    num_movel = num_movel + 1;
 
                     i = i - 1;
 
@@ -975,7 +999,7 @@ void halve_it()
         // andi/ori.l #xx,d(An) = 32 cycles
 
         dprintf("\nandi.l/ori.l pair optimisations\n-------------------------------\n");
-        U16 mark_to_search_for = A_AND_OR;
+        mark_to_search_for = A_AND_OR;
         if (!use_masking)
         {
             // We were asked not to gerenarte mask code so we're searching for 2 consecutive ORs
@@ -1075,14 +1099,14 @@ void halve_it()
         }
 
         // Any actions left from here on are candidates for register caching. Let's mark this.
-        POTENTIAL_CODE *cacheable_code = out_potential;
+        cacheable_code = out_potential;
 
 
         // Build a "most frequent values" table so we can load things into data registers when possible
         // We could be lazy and just use a huge table which would lead to tons of wasted RAM but let's not do that
         // (I figure this implementation is going to be a tad slow though!)
         cur_mark = mark_buf;
-        S16 num_freqs = 0;
+        num_freqs = 0;
         FREQ *freqptr;
         for (i = num_actions - 1; i >= 0; i--)
         {
@@ -1107,6 +1131,8 @@ void halve_it()
                     value = cur_mark->value_and;
                     break;
                 default:
+                    // We shouldn't get here
+                    value = -1;
                     dprintf("Creating frequency table: type %i wat", cur_mark->action);
                     break;
                 }
@@ -1150,11 +1176,11 @@ void halve_it()
         {
             num_freqs = 15;
         }
-        U16 *cached_values = write_sprite_data;
+        cached_values = write_sprite_data;
         dprintf("\nMost frequent values\n--------------------\n");
         // Keep highest frequency values in low words of registers,
         // since it will probably result in fewer SWAP emissions
-        U16 *write_arranged_values = write_sprite_data + 1;
+        write_arranged_values = write_sprite_data + 1;
         for (i = num_freqs; i >= 0; i--)
         {
             freqptr--;
@@ -1253,8 +1279,7 @@ void halve_it()
         // move.w Dn,d(Am)      = 12 cycles
 
         dprintf("\nData register optimisations\n---------------------------\n");
-        POTENTIAL_CODE *potential_end = out_potential;
-        U16 swaptable[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };                 // SWAP state of registers
+        potential_end = out_potential;
         for (out_potential = cacheable_code; out_potential < potential_end; out_potential++)
         {
             U16 cur_value = out_potential->value;
@@ -1360,8 +1385,8 @@ void halve_it()
                         break;
                     }
                 do_not_optimise_register:
-                    // I hope this compiles to nothing. At least in VS2017 defining the label above without any instructions before the end of the scope results in a compile error...
-                    cycles_saved_from_registers;
+                    // This compiles to nothing. It's just there to stop the compiler whining about our goto above
+                    cur_value;
                 }
             }
         }
@@ -1394,9 +1419,9 @@ void halve_it()
         // Hey, it's the movem.l case once again :)
 
         dprintf("\nPost increment optimisations\n----------------------------\n");
-        U32 prev_offset = potential->screen_offset;
-        U16 distance_between_actions = potential->bytes_affected;
-        short consecutive_instructions = 0;
+        prev_offset = potential->screen_offset;
+        distance_between_actions = potential->bytes_affected;
+        consecutive_instructions = 0;
         
         // NOTE: we're going to scan one entry past the end of the table in order to catch that
         //       corner case where the last instruction is optimisable
@@ -1501,8 +1526,8 @@ void halve_it()
         // Finally, emit the damn code!
         
         //U16 screen_offset = 0;
-        U16 *lea_patch_address = 0;
-        U16 lea_offset = 0;
+        lea_patch_address = 0;
+        lea_offset = 0;
         dprintf("\n\nFinal code:\n-----------\n");
         cprintf(";----------------------------------------------------\n");
         cprintf("; Frame %i\n", shift);
@@ -1538,7 +1563,7 @@ void halve_it()
         // (geez, lots of assumptions)
         cprintf("lea sprite_data_shift_%i(pc),a0\n", shift);
         *write_code++ = LEA_PC_A0;
-        U16 *first_lea_offset = write_code;
+        first_lea_offset = write_code;
         write_code++;
 
         for (out_potential = potential; out_potential < potential_end; out_potential++)
@@ -1624,11 +1649,7 @@ void halve_it()
                 }
                 else if ((out_potential->base_instruction & 0xffff0000) == MOVEM_L_TO_REG)
                 {
-                    U32 c;
-                    U32 v = out_potential->base_instruction & 0xffff;
-                    v = v - ((v >> 1) & 0x55555555);                    // reuse input as temporary
-                    v = (v & 0x33333333) + ((v >> 2) & 0x33333333);     // temp
-                    c = ((v + (v >> 4) & 0xF0F0F0F) * 0x1010101) >> 24; // count
+                    U32 c = count_bits(out_potential->base_instruction & 0xffff);
                     if (c <= 8)
                     {
                         fprintf(code_file, "movem.l (a0)+,d0-d%i\n", c - 1);
@@ -1644,11 +1665,7 @@ void halve_it()
                 }
                 else if ((out_potential->base_instruction & 0xffff0000) == MOVEM_L_FROM_REG)
                 {
-                    U32 c;
-                    U32 v = out_potential->base_instruction & 0xffff;
-                    v = v - ((v >> 1) & 0x55555555);                    // reuse input as temporary
-                    v = (v & 0x33333333) + ((v >> 2) & 0x33333333);     // temp
-                    c = ((v + (v >> 4) & 0xF0F0F0F) * 0x1010101) >> 24; // count
+                    U32 c = count_bits(out_potential->base_instruction & 0xffff);
                     if (c <= 8)
                     {
                         fprintf(code_file, "movem.l d0-d7/a2-a%i,", c - 1);
@@ -1664,20 +1681,12 @@ void halve_it()
                 }
                 else if ((out_potential->base_instruction & 0xffff0000) == MOVEM_W_TO_REG)
                 {
-                    U32 c;
-                    U32 v = out_potential->base_instruction & 0xffff;
-                    v = v - ((v >> 1) & 0x55555555);                    // reuse input as temporary
-                    v = (v & 0x33333333) + ((v >> 2) & 0x33333333);     // temp
-                    c = ((v + (v >> 4) & 0xF0F0F0F) * 0x1010101) >> 24; // count
+                    U32 c = count_bits(out_potential->base_instruction & 0xffff);
                     fprintf(code_file, "movem.w (a0)+,d0-d%i\n", c - 1);
                 }
                 else if ((out_potential->base_instruction & 0xffff0000) == MOVEM_W_FROM_REG)
                 {
-                    U32 c;
-                    U32 v = out_potential->base_instruction & 0xffff;
-                    v = v - ((v >> 1) & 0x55555555);                    // reuse input as temporary
-                    v = (v & 0x33333333) + ((v >> 2) & 0x33333333);     // temp
-                    c = ((v + (v >> 4) & 0xF0F0F0F) * 0x1010101) >> 24; // count
+                    U32 c = count_bits(out_potential->base_instruction & 0xffff);
                     fprintf(code_file, "movem.w d0-d%i,", c - 1);
                 }
                 else
@@ -1772,7 +1781,7 @@ void halve_it()
 
         // Glue the sprite_data buffer immediately after the code
         
-        U16 *read_sprite_data=sprite_data;
+        read_sprite_data = sprite_data;
 #ifdef PRINT_CODE
         fprintf(code_file, "sprite_data_shift_%i:\ndc.w ", shift);
         j = 0;
