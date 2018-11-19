@@ -131,6 +131,16 @@ using namespace brown;
 
 #define EMIT_SWAP       0x10000
 
+// TODO: some solution to determine endianness here
+#define LITTLE_ENDIAN
+#ifdef LITTLE_ENDIAN
+#define WRITE_LONG(x) ((((x) & 0x000000FF) << 24) | (((x) & 0x0000FF00) << 8) | (((x) & 0x00FF0000) >> 8) | (((x) & 0xFF000000) >> 24))
+#define WRITE_WORD(x) ((((x) & 0x00FF) << 8) | (((x) & 0xFF00) >> 8))
+#else
+#define WRITE_LONG(x) x
+#define WRITE_WORD(x) x
+#endif
+
 typedef enum _ACTIONS : U16
 {
     // Actions, i.e. what instructions should we emit per case.
@@ -186,6 +196,7 @@ FREQ freqtab[8000];                // Frequency table for the values we're going
 POTENTIAL_CODE potential[16384];   // What we'll most probably output, bar a few optimisations
 U16 output_buf[65536];             // Where the output code will be stored
 U16 sprite_data[16384];            // The sprite data we're going to read when we want to draw the frames. Temporary buffer as this data will be stored immediately after the generated code
+U16 *write_code = output_buf;
 
 // Our own ghetto memcpy (remember, we don't want to use any library stuff due to this potentially running on a real ST etc)
 // size must be multiple of 4. No checks done against this. Bite me.
@@ -309,7 +320,6 @@ void halve_it()
     int generate_background_save_restore_code = 0;
     short i, j, k;
     short loop_count;
-    U16 *write_code = output_buf;
 
     // Bring a copy of the sprite to our screen buffer
     copy((U32 *)buf_origsprite, (U32 *)buf_shift, BUFFER_SIZE);
@@ -372,7 +382,7 @@ void halve_it()
     S16 shift_count = 15;
     if (horizontal_clip)
     {
-        write_code = write_code + (16 + (sprite_width - 16) * 2) * 2;
+        write_code = write_code + (16 + (sprite_width - 16 - 1) * 2) * 2;
         cprintf("sprite_routines:\n");
         for (i = 0; i < 16; i++)
         {
@@ -508,7 +518,7 @@ void halve_it()
         U16 val_and = *mask;
         U16 val_or;        
         out_potential = potential;                      // Reset potential moves pointer
-        *write_pointers++ = write_code - output_buf;    // Mark down the entry point for this routine
+        *write_pointers++ = WRITE_LONG((U8 *)write_code - (U8 *)output_buf);    // Mark down the entry point for this routine
         U16 *write_sprite_data = sprite_data;
         MARK *marks_end;                                // End of marks buffer
         U16 mark_to_search_for;
@@ -671,7 +681,7 @@ void halve_it()
         if (num_actions == 0)
         {
             // Nothing to do for this frame, so skip it
-            *write_code++ = RTS;
+            *write_code++ = WRITE_WORD(RTS);
             if (shift < 16)
             {
                 cprintf("sprite_code_shift_%i:\n", shift);
@@ -1562,7 +1572,7 @@ void halve_it()
         // Also, assuming that we won't dump more than 32k of code so the offset can be pc relative!
         // (geez, lots of assumptions)
         cprintf("lea sprite_data_shift_%i(pc),a0\n", shift);
-        *write_code++ = LEA_PC_A0;
+        *write_code++ = WRITE_WORD(LEA_PC_A0);
         first_lea_offset = write_code;
         write_code++;
 
@@ -1571,8 +1581,8 @@ void halve_it()
             // Emit the movem to load data registers when we reach the point where we need it
             if (out_potential == cacheable_code)
             {
-                *write_code++ = MOVEM_L_TO_REG >> 16; // movem.l (a0)+,register_list
-                *write_code++ = (1 << (num_freqs >> 1)) - 1;
+                *write_code++ = WRITE_WORD(MOVEM_L_TO_REG >> 16); // movem.l (a0)+,register_list
+                *write_code++ = WRITE_WORD((1 << (num_freqs >> 1)) - 1);
                 cprintf("movem.l (a0)+,d0-d%i\n", num_freqs >> 1);
             }
 
@@ -1581,12 +1591,14 @@ void halve_it()
             {
                 if (out_potential->base_instruction == MOVED_W)
                 {
-                    *write_code++ = SWAP | (out_potential->base_instruction & 7);
+                    // Get register to swap from move.w Dx,<ea>
+                    *write_code++ = WRITE_WORD(SWAP | (out_potential->base_instruction & 7));
                     cprintf("swap D%i\n", out_potential->base_instruction & 7);
                 }
                 else
                 {
-                    *write_code++ = SWAP | ((out_potential->base_instruction >> 9) & 7);
+                    // Get register to swap from and.w/or.w Dx,<ea>
+                    *write_code++ = WRITE_WORD(SWAP | ((out_potential->base_instruction >> 9) & 7));
                     cprintf("swap D%i\n", ((out_potential->base_instruction >> 9) & 7));
                 }
             }
@@ -1597,16 +1609,26 @@ void halve_it()
                 // We are in the first instruction of a (a1)+/(a1) instruction block, so we need to output
                 // a lea d(a1),a1 instruction. We calculate d relative to previous value of a1, which at
                 // the start of the code is at the top left corner of the sprite.
-                *write_code++ = LEA_D_A1;
+                *write_code++ = WRITE_WORD(LEA_D_A1);
                 //lea_patch_address = write_code;
                 // Punch a hole in the code to allow for the lea offset but don't fill it yet
-                *write_code++ = out_potential->screen_offset - lea_offset;
+                *write_code++ = WRITE_WORD(out_potential->screen_offset - lea_offset);
                 lea_offset = out_potential->screen_offset - lea_offset;
                 cprintf("lea %i(a1),a1\n", lea_offset);
             }
 
             // Write opcode
-            *write_code++ = out_potential->base_instruction | out_potential->ea;
+            // TODO: any better way to do this?
+            if ((out_potential->base_instruction & 0xf0000000) == 0x40000000)
+            {
+                // movem - write 2 words
+                *write_code++ = WRITE_WORD(out_potential->base_instruction >> 16);
+                *write_code++ = WRITE_WORD((out_potential->base_instruction | out_potential->ea) & 0xffff);
+            }
+            else
+            {
+                *write_code++ = WRITE_WORD(out_potential->base_instruction | out_potential->ea);
+            }
 #ifdef PRINT_CODE
             switch (out_potential->base_instruction)
             {
@@ -1704,7 +1726,7 @@ void halve_it()
             case ANDI_W:
             case ORI_W:
                 // Output .w immediate value
-                *write_code++ = (U16)out_potential->value;
+                *write_code++ = WRITE_WORD((U16)out_potential->value);
                 cprintf("#$%04x,", out_potential->value);
                 break;
 
@@ -1712,8 +1734,8 @@ void halve_it()
             case ANDI_L:
             case ORI_L:
                 // Output .l immediate value
-                *write_code++ = (U16)(out_potential->value >> 16);
-                *write_code++ = (U16)(out_potential->value);
+                *write_code++ = WRITE_WORD((U16)(out_potential->value >> 16));
+                *write_code++ = WRITE_WORD((U16)(out_potential->value));
                 cprintf("#$%04x,", out_potential->value);
                 break;
 
@@ -1721,18 +1743,11 @@ void halve_it()
                 break;
             }
 
-            // Write screen offsets if needed
-            //if (((out_potential->base_instruction) & 0xffff0000) == MOVEM_L_FROM_REG || (out_potential->base_instruction & 0xffff0000) == MOVEM_W_FROM_REG)
-            //{
-            //    *write_code++ = (U16)out_potential->screen_offset - lea_offset;
-            //    cprintf("$%04x(a1)\n", out_potential->screen_offset - lea_offset);
-            //}
-
             switch (out_potential->ea)
             {
             case EA_D_A1:
             case EA_MOVE_D_A1:
-                *write_code++ = (U16)out_potential->screen_offset - lea_offset;
+                *write_code++ = WRITE_WORD((U16)out_potential->screen_offset - lea_offset);
                 cprintf("$%04x(a1)\n", out_potential->screen_offset - lea_offset);
                 break;
 
@@ -1772,12 +1787,12 @@ void halve_it()
         }
 
         // Final touch - RTS
-        *write_code++ = RTS;
+        *write_code++ = WRITE_WORD(RTS);
         cprintf("rts\n");
 
         // Now that we know the offset which the sprite data will be written,
         // let's fill in that lea gap we left at the beginning.
-        *first_lea_offset = write_code - first_lea_offset;
+        *first_lea_offset = WRITE_WORD((U8 *)write_code - (U8 *)first_lea_offset);
 
         // Glue the sprite_data buffer immediately after the code
         
@@ -2016,6 +2031,14 @@ int main(int argc, char ** argv)
 
 #ifdef PRINT_CODE
     fclose(code_file);
+#endif
+
+#if defined(WIN32) || defined(WIN64) || defined(__APPLE__) || defined(__linux__) || defined(__CYGWIN__) || defined(__MINGW32__)
+    // Write the actual binary to a file
+    // This should be incbinable into projects
+    FILE *binary_output = fopen("code.dat", "wb");
+    fwrite(output_buf, write_code - output_buf, 1, binary_output);
+    fclose(binary_output);
 #endif
 
     return 0;

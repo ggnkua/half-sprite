@@ -43,7 +43,7 @@ copyline:       movem.l (A0),D0-D6
 draw_loop:      movea.l screen,A1
 
                 move.l a1,a0
-                moveq #0,d0
+                moveq #-1,d0
                 move.w #32000/4-1,d7
 clr_scr:        move.l d0,(a0)+
                 dbra d7,clr_scr
