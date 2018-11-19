@@ -855,7 +855,7 @@ void halve_it()
                 if (num_moves >= 3)
                 {
 #ifdef CYCLES_REPORT
-                    cycles_saved_from_movem_w = cycles_saved_from_movem_w + 8 * (num_moves - 3); // movem.l (a0)+,regs / movem.l regs,d(A1)
+                    cycles_saved_from_movem_w = cycles_saved_from_movem_w + 8 * (num_moves - 3); // movem.w (a0)+,regs / movem.w regs,d(A1)
 #endif
                     out_potential[1].screen_offset = cur_mark->offset;  // Save screen offset for the second movem
                     dprintf("movem.w (a0)+,d0-d%i\nmovem.w d0-d%i,$%04x(a1)\ndc.w ", num_moves - 1, num_moves - 1, cur_mark->offset);
@@ -1585,6 +1585,7 @@ void halve_it()
         for (out_potential = potential; out_potential < potential_end; out_potential++)
         {
             // Emit the movem to load data registers when we reach the point where we need it
+            // TODO: less than 3 registers? output plain old move.l #xxx,Dn
             if (out_potential == cacheable_code)
             {
                 // Only output a movem if there's actual data to read!
@@ -1624,7 +1625,7 @@ void halve_it()
                 // Punch a hole in the code to allow for the lea offset but don't fill it yet
                 *write_code++ = WRITE_WORD(out_potential->screen_offset - lea_offset);
                 lea_offset = out_potential->screen_offset - lea_offset;
-                cprintf("lea %i(a1),a1\n", lea_offset);
+                cprintf("lea %i(a1),a1\n", (S16)lea_offset);
             }
 
             // Write opcode
