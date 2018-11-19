@@ -101,7 +101,7 @@ using namespace brown;
 #define MOVEM_L_TO_REG      (0x4cd8 << 16)
 #define MOVEM_L_FROM_REG    (0x48c0 << 16)
 #define MOVEM_W_TO_REG      (0x4c98 << 16)
-#define MOVEM_W_FROM_REG    (0x4880 << 16)
+#define MOVEM_W_FROM_REG    (0x48a9 << 16)
 #define MOVEI_L             0x203c
 #define MOVEI_W             0x303c
 #define MOVEP_L             ((0x1c9 << 16) | 1)
@@ -116,7 +116,7 @@ using namespace brown;
 #define LEA_D_A1            0x43e9
 #define SWAP                0x4840
 #define LEA_PC_A0           0x41fa
-#define RTS                 0x4e73
+#define RTS                 0x4e75
 
 // Effective address encodings
 
@@ -682,6 +682,8 @@ void halve_it()
         {
             // Nothing to do for this frame, so skip it
             *write_code++ = WRITE_WORD(RTS);
+            cprintf(";----------------------------------------------------\n");
+            cprintf("; Frame %i\n", shift);
             if (shift < 16)
             {
                 cprintf("sprite_code_shift_%i:\n", shift);
@@ -1181,30 +1183,31 @@ void halve_it()
         // TODO: this has to be an even number for the movem!
         // TODO: if the sum of frequent values is not worth the movem.l, don't output anything
 
+        num_freqs = num_freqs & -2; // Even the number of values as we're gonna movem.l them
         freqptr = &freqtab[num_freqs];
-        if (num_freqs > 15)
+        if (num_freqs > 16)
         {
-            num_freqs = 15;
+            num_freqs = 16;
         }
         cached_values = write_sprite_data;
         dprintf("\nMost frequent values\n--------------------\n");
         // Keep highest frequency values in low words of registers,
         // since it will probably result in fewer SWAP emissions
         write_arranged_values = write_sprite_data + 1;
-        for (i = num_freqs; i >= 0; i--)
+        for (i = num_freqs-1; i >= 0; i--)
         {
             freqptr--;
             *write_arranged_values = freqptr->value;
             write_arranged_values = write_arranged_values + 2;
-            if (i == 8)
+            if (i == (num_freqs / 2))
             {
                 write_arranged_values = write_sprite_data;
             }
         }
-        write_sprite_data = write_sprite_data + 16;
+        write_sprite_data = write_sprite_data + num_freqs;
         for (i = 0; i <= num_freqs; i++)
         {
-            if (i < 8)
+            if (i < (num_freqs / 2))
             {
                 dprintf("$%04x <-- d%i hi word\n", cached_values[i * 2], i);
             }
@@ -1568,22 +1571,29 @@ void halve_it()
         }
 
         // We need to load a0 with the sprite data
-        // Safe to assume that there will be data, hopefully!
+        // Only if there was any data output though!
         // Also, assuming that we won't dump more than 32k of code so the offset can be pc relative!
         // (geez, lots of assumptions)
-        cprintf("lea sprite_data_shift_%i(pc),a0\n", shift);
-        *write_code++ = WRITE_WORD(LEA_PC_A0);
-        first_lea_offset = write_code;
-        write_code++;
+        if (write_sprite_data != sprite_data)
+        {
+            cprintf("lea sprite_data_shift_%i(pc),a0\n", shift);
+            *write_code++ = WRITE_WORD(LEA_PC_A0);
+            first_lea_offset = write_code;
+            write_code++;
+        }
 
         for (out_potential = potential; out_potential < potential_end; out_potential++)
         {
             // Emit the movem to load data registers when we reach the point where we need it
             if (out_potential == cacheable_code)
             {
-                *write_code++ = WRITE_WORD(MOVEM_L_TO_REG >> 16); // movem.l (a0)+,register_list
-                *write_code++ = WRITE_WORD((1 << (num_freqs >> 1)) - 1);
-                cprintf("movem.l (a0)+,d0-d%i\n", num_freqs >> 1);
+                // Only output a movem if there's actual data to read!
+                if (num_freqs > 0)
+                {
+                    *write_code++ = WRITE_WORD(MOVEM_L_TO_REG >> 16); // movem.l (a0)+,register_list
+                    *write_code++ = WRITE_WORD((1 << ((num_freqs) >> 1)) - 1);
+                    cprintf("movem.l (a0)+,d0-d%i\n", (num_freqs - 1) >> 1);
+                }
             }
 
             // Emit a SWAP if required
@@ -1621,9 +1631,9 @@ void halve_it()
             // TODO: any better way to do this?
             if ((out_potential->base_instruction & 0xf0000000) == 0x40000000)
             {
-                // movem - write 2 words
+                // movem - write 2 words, also <ea> is baked in 
                 *write_code++ = WRITE_WORD(out_potential->base_instruction >> 16);
-                *write_code++ = WRITE_WORD((out_potential->base_instruction | out_potential->ea) & 0xffff);
+                *write_code++ = WRITE_WORD((out_potential->base_instruction) & 0xffff);
             }
             else
             {
@@ -1632,12 +1642,6 @@ void halve_it()
 #ifdef PRINT_CODE
             switch (out_potential->base_instruction)
             {
-            //case MOVEM_L_FROM_REG:
-            //    fprintf(code_file, "movem.l ");
-            //    break;
-            //case MOVEM_W_FROM_REG:
-            //    fprintf(code_file, "movem.w ");
-            //    break;
             case MOVEI_W:
                 fprintf(code_file, "move.w ");
                 break;
@@ -1792,49 +1796,58 @@ void halve_it()
 
         // Now that we know the offset which the sprite data will be written,
         // let's fill in that lea gap we left at the beginning.
-        *first_lea_offset = WRITE_WORD((U8 *)write_code - (U8 *)first_lea_offset);
+        // But only if we wrote any data in the first place!
+        if (write_sprite_data != sprite_data)
+        {
+            *first_lea_offset = WRITE_WORD((U8 *)write_code - (U8 *)first_lea_offset);
 
-        // Glue the sprite_data buffer immediately after the code
-        
-        read_sprite_data = sprite_data;
+            // Glue the sprite_data buffer immediately after the code
+
 #ifdef PRINT_CODE
-        fprintf(code_file, "sprite_data_shift_%i:\ndc.w ", shift);
-        j = 0;
-        for (i = write_sprite_data - sprite_data - 1; i >= 0; i--)
-        {
-            if (j != 15)
+            read_sprite_data = sprite_data;
+            if (write_sprite_data != sprite_data)
             {
-                if (i != 0)
-                {
-                    fprintf(code_file, "$%04x,", *read_sprite_data++);
-                }
-                else
-                {
-                    fprintf(code_file, "$%04x\n", *read_sprite_data++);
-                }
-                j++;
-            }
-            else
-            {
+                fprintf(code_file, "sprite_data_shift_%i:\ndc.w ", shift);
                 j = 0;
-                if (i != 0)
+                for (i = write_sprite_data - sprite_data - 1; i >= 0; i--)
                 {
-                    fprintf(code_file, "$%04x\ndc.w ", *read_sprite_data++);
-                }
-                else
-                {
-                    // Corner case, if last word to be output is at the end of a printed line, don't print spurious "dc.w"
-                    fprintf(code_file, "$%04x\n", *read_sprite_data++);
+                    if (j != 15)
+                    {
+                        if (i != 0)
+                        {
+                            fprintf(code_file, "$%04x,", *read_sprite_data++);
+                        }
+                        else
+                        {
+                            fprintf(code_file, "$%04x\n", *read_sprite_data++);
+                        }
+                        j++;
+                    }
+                    else
+                    {
+                        j = 0;
+                        if (i != 0)
+                        {
+                            fprintf(code_file, "$%04x\ndc.w ", *read_sprite_data++);
+                        }
+                        else
+                        {
+                            // Corner case, if last word to be output is at the end of a printed line, don't print spurious "dc.w"
+                            fprintf(code_file, "$%04x\n", *read_sprite_data++);
+                        }
+                    }
+
                 }
             }
-
-        }
 #endif
-        loop_count = write_sprite_data - sprite_data - 1;
-        do
-        {
-            *write_code++ = *read_sprite_data++;
-        } while (--loop_count != -1);
+            read_sprite_data = sprite_data;
+            loop_count = write_sprite_data - sprite_data - 1;
+            do
+            {
+                *write_code++ = WRITE_WORD(*read_sprite_data);
+                read_sprite_data++;
+            } while (--loop_count != -1);
+        }
 
         //
         // Prepare for next frame
@@ -2037,7 +2050,7 @@ int main(int argc, char ** argv)
     // Write the actual binary to a file
     // This should be incbinable into projects
     FILE *binary_output = fopen("code.dat", "wb");
-    fwrite(output_buf, write_code - output_buf, 1, binary_output);
+    fwrite(output_buf, (U8 *)write_code - (U8 *)output_buf, 1, binary_output);
     fclose(binary_output);
 #endif
 
