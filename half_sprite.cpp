@@ -131,8 +131,11 @@ using namespace brown;
 
 #define EMIT_SWAP       0x10000
 
-// TODO: some solution to determine endianness here
+// No idea how to check for endianness during compile time so eh, this will do I guess
+#if defined(WIN32) || defined(WIN64) || defined(__APPLE__) || defined(__linux__) || defined(__CYGWIN__) || defined(__MINGW32__)
 #define LITTLE_ENDIAN
+#endif
+
 #ifdef LITTLE_ENDIAN
 #define WRITE_LONG(x) ((((x) & 0x000000FF) << 24) | (((x) & 0x0000FF00) << 8) | (((x) & 0x00FF0000) >> 8) | (((x) & 0xFF000000) >> 24))
 #define WRITE_WORD(x) ((((x) & 0x00FF) << 8) | (((x) & 0xFF00) >> 8))
@@ -302,7 +305,7 @@ void halve_it()
     // (also, this will have an impact on every place in the code
     // where sprite dimensions can be hardcoded by the compiler)
     short sprite_width = 32;            // Sprite width in pixels. -1=auto detect
-    short sprite_height = 31;           // Sprite height in pixels. -1=auto detect
+    short sprite_height = 32;           // Sprite height in pixels. -1=auto detect
     short screen_width = 320;           // Actual screen width in pixels
     short screen_plane_words = screen_width / 16;
     // General constants
@@ -314,7 +317,7 @@ void halve_it()
     // that has to be written into a 4bpp backdrop
     short num_mask_planes = 4;
     int use_masking = 1;                // Do we actually want to mask the sprites or is it going to be a special case? (for example, 1bpp sprites)
-    int generate_mask = 1;              // Should we auto generate mask or will user supply his/her own?
+    int generate_mask = 0;              // Should we auto generate mask or will user supply his/her own?
     int outline_mask = 0;               // Should we outline mask?
     int horizontal_clip = 1;            // Should we output code that enables horizontal clip for x<0 and x>screen_width-sprite_width? (this can lead to HUGE amounts of outputted code depending on sprite width!)
     int generate_background_save_restore_code = 0;
@@ -326,9 +329,10 @@ void halve_it()
 
     // Detect sprite dimensions if requested
     // (quantised to 16 pixels in width)
+    // Really not recommended tbh as this can perceive any masks or other sprites as one sprite
     if (sprite_width == -1 || sprite_height == -1)
     {
-        short x, y;
+        S16 x, y;
         U16 *scan_screen = (U16 *)buf_origsprite;
         loop_count = screen_height - 1;
         y = 0;
@@ -424,7 +428,7 @@ void halve_it()
     // Main - repeats 16 times for 16 preshifts (plus 2*(sprite_width-1) if we're clipping)
     for (shift = 0; shift < shift_count; shift++)
     {
-        short x, y;
+        S16 x, y;
         U16 *buf = (U16 *)buf_shift;
         U16 *mask = (U16 *)buf_mask;
 #ifdef CYCLES_REPORT
@@ -506,7 +510,76 @@ void halve_it()
                 }
                 else
                 {
-                    // TODO: copy the mask from the user supplied one
+                    // If we got a user supplied mask, let's copy it to our buffer now
+                    // Assuming that mask will be directly below the sprite, starting at sprite_height+1
+                    // So it's going to be as many bitplanes as the sprite for now, which is a waste
+                    // (but then it's easier for the artist as he/she just pastes the mask inside the same file)
+                    // TODO: so we might need a bit more flexibility, i.e. ability to supply a 1bpp mask
+                    U16 gather_planes;
+                    U16 *mask_src = (U16 *)buf_origsprite + (screen_planes*screen_width / 16)*sprite_height;
+                    U16 *mask_dst = (U16 *)buf_mask;
+                    for (y = 0;y < sprite_height;y++)
+                    {
+                        for (x = 0;x < sprite_width - 16;x = x + 16)
+                        {
+                            // Let's play safe and OR all the mask words, we can't be sure which colour(s) is used for the mask
+                            gather_planes = 0;
+                            for (j = 0; j < screen_planes; j++)
+                            {
+                                gather_planes = gather_planes | *mask_src;
+                                mask_src++;
+                            }
+                            *mask_dst++ = gather_planes;
+
+                        }
+                        // Extra word for shifting
+                        *mask_dst++ = 0xffff;
+                        mask_dst = mask_dst + ((screen_width - sprite_width) / 16);
+                        mask_src = mask_src + (screen_planes*(screen_width - sprite_width) / 16) + screen_planes;
+
+                    }
+                    if (shift == 16)
+                    {
+                        // If we're starting clipping to the left we need to shift the mask once here
+                        // TODO: this is just copy/paste from near the end of the shift loop, perhaps we can change the logic so this isn't needed?
+                        mask = (U16 *)buf_mask;
+                        for (y = 0; y < sprite_height; y++)
+                        {
+                            // Point to the start of the scanline as we'll shift from left to right
+                            U16 *line_mask = mask;
+                            for (x = 0; x < sprite_words - 1; x++)
+                            {
+                                *line_mask = (*line_mask << 1) | ((line_mask[1] >> 15) & 1);
+                                line_mask++;
+                            }
+                            // Last word of the scanline - we also have to generate a "1" at the rightmost pixel since this is a mask and we'll be shifting it one place to the right
+                            *line_mask = (*line_mask << 1) | 1;
+                            // Advance to next scanline
+                            mask = mask + screen_plane_words;
+                        }
+                    }
+                    else if (shift == 16 + (sprite_width - 16) - 1)
+                    {
+                        // If we're starting clipping to the right we need to shift the mask once here
+                        // TODO: this is just copy/paste from near the end of the shift loop, perhaps we can change the logic so this isn't needed?
+                        mask = (U16 *)buf_mask;
+                        for (y = 0; y < sprite_height; y++)
+                        {
+                            // Point to the end of the scanline as we'll shift from right to left
+                            // Our counters and offsets here are (sprite_words+1) due to the fact that sprite_words counts sprite words without the extra word for shifting
+                            U16 *line_mask = mask + (sprite_words - 1);
+                            *line_mask-- = 0xffff;
+                            for (x = 0; x < sprite_words - 1 - 1; x++)
+                            {
+                                *line_mask = ((line_mask[-1] & 1) << 15) | (*line_mask >> 1);
+                                line_mask--;
+                            }
+                            // First word of the scanline - we also have to generate a "1" at the leftmost pixel since this is a mask and we'll be shifting it one place to the right
+                            *line_mask = (1 << 15) | (*line_mask >> 1);
+                            // Advance to next scanline
+                            mask = mask + screen_plane_words;
+                        }
+                    }
                 }
             }
         }
@@ -677,6 +750,9 @@ void halve_it()
             plane_counter = 0;
 
         }
+#ifdef CYCLES_REPORT
+        cycles_unoptimised = cycles_unoptimised + 16;   // RTS
+#endif
 
         if (num_actions == 0)
         {
@@ -1036,6 +1112,9 @@ void halve_it()
                         out_potential->bytes_affected = 4;          // One longword s'il vous plait
                         dprintf("andi.w #$%04x,$%04x(a1) - andi.w #$%04x,$%04x(a1) -> andi.l #$%08x,$%04x(a1)\n", cur_mark->value_and, cur_mark->offset, cur_mark[1].value_and, cur_mark[1].offset, out_potential->value, cur_mark->offset);
                         out_potential++;
+#ifdef CYCLES_REPORT
+                        cycles_saved_from_and_l_or_l = cycles_saved_from_and_l_or_l + (2 * 20 - 32); // 2xandi.w + 2xori.w -> andi.l + ori.l
+#endif
                     }
 
                     out_potential->base_instruction = ORI_L;        // ori.l #xxx,
@@ -1052,7 +1131,7 @@ void halve_it()
                     i = i - 1;
 
 #ifdef CYCLES_REPORT
-                    cycles_saved_from_and_l_or_l = cycles_saved_from_and_l_or_l + 2*(2 * 20 - 32); // 2xandi.w + 2xori.w -> andi.l + ori.l
+                    cycles_saved_from_and_l_or_l = cycles_saved_from_and_l_or_l + (2 * 20 - 32); // 2xandi.w + 2xori.w -> andi.l + ori.l
 #endif
                 }
             }
@@ -1178,9 +1257,8 @@ void halve_it()
         
         qsort(freqtab, num_freqs);
 
-        // Write the top 16 values to the sprite data buffer
+        // Write the top 16 values (or less) to the sprite data buffer
         // There's a small chance that there are less than 16 values
-        // TODO: this has to be an even number for the movem!
         // TODO: if the sum of frequent values is not worth the movem.l, don't output anything
 
         num_freqs = num_freqs & -2; // Even the number of values as we're gonna movem.l them
@@ -1576,7 +1654,7 @@ void halve_it()
         // (geez, lots of assumptions)
         if (write_sprite_data != sprite_data)
         {
-            cprintf("lea sprite_data_shift_%i(pc),a0\n", shift);
+            cprintf("lea     sprite_data_shift_%i(pc),a0  ;8\n", shift);
             *write_code++ = WRITE_WORD(LEA_PC_A0);
             first_lea_offset = write_code;
             write_code++;
@@ -1593,7 +1671,7 @@ void halve_it()
                 {
                     *write_code++ = WRITE_WORD(MOVEM_L_TO_REG >> 16); // movem.l (a0)+,register_list
                     *write_code++ = WRITE_WORD((1 << ((num_freqs) >> 1)) - 1);
-                    cprintf("movem.l (a0)+,d0-d%i\n", (num_freqs - 1) >> 1);
+                    cprintf("movem.l (a0)+,d0-d%i        ;%i\n", (num_freqs - 1) >> 1, 12+8*((num_freqs - 1) >> 1));
                 }
             }
 
@@ -1604,13 +1682,13 @@ void halve_it()
                 {
                     // Get register to swap from move.w Dx,<ea>
                     *write_code++ = WRITE_WORD(SWAP | (out_potential->base_instruction & 7));
-                    cprintf("swap D%i\n", out_potential->base_instruction & 7);
+                    cprintf("swap    D%i                  ;4\n", out_potential->base_instruction & 7);
                 }
                 else
                 {
                     // Get register to swap from and.w/or.w Dx,<ea>
                     *write_code++ = WRITE_WORD(SWAP | ((out_potential->base_instruction >> 9) & 7));
-                    cprintf("swap D%i\n", ((out_potential->base_instruction >> 9) & 7));
+                    cprintf("swap    D%i                  ;4\n", ((out_potential->base_instruction >> 9) & 7));
                 }
             }
 
@@ -1621,11 +1699,10 @@ void halve_it()
                 // a lea d(a1),a1 instruction. We calculate d relative to previous value of a1, which at
                 // the start of the code is at the top left corner of the sprite.
                 *write_code++ = WRITE_WORD(LEA_D_A1);
-                //lea_patch_address = write_code;
                 // Punch a hole in the code to allow for the lea offset but don't fill it yet
                 *write_code++ = WRITE_WORD(out_potential->screen_offset - lea_offset);
                 lea_offset = out_potential->screen_offset - lea_offset;
-                cprintf("lea %i(a1),a1\n", (S16)lea_offset);
+                cprintf("lea     %i(a1),a1          ;8\n", (S16)lea_offset);
             }
 
             // Write opcode
@@ -1644,50 +1721,50 @@ void halve_it()
             switch (out_potential->base_instruction)
             {
             case MOVEI_W:
-                fprintf(code_file, "move.w ");
+                fprintf(code_file, "move.w  ");
                 break;
             case ANDI_W:
-                fprintf(code_file, "andi.w ");
+                fprintf(code_file, "andi.w  ");
                 break;
             case ORI_W:
-                fprintf(code_file, "ori.w ");
+                fprintf(code_file, "ori.w   ");
                 break;
             case MOVEI_L:
-                fprintf(code_file, "move.l ");
+                fprintf(code_file, "move.l  ");
                 break;
             case ANDI_L:
-                fprintf(code_file, "andi.l ");
+                fprintf(code_file, "andi.l  ");
                 break;
             case ORI_L:
-                fprintf(code_file, "ori.l ");
+                fprintf(code_file, "ori.l   ");
                 break;
             default:
                 if ((out_potential->base_instruction & 0xffc0) == MOVED_W)
                 {
-                    fprintf(code_file, "move.w d%i,", out_potential->base_instruction & 7);
+                    fprintf(code_file, "move.w  d%i,", out_potential->base_instruction & 7);
                 }
                 else if ((out_potential->base_instruction & 0xf1ff) == ANDD_W)
                 {
-                    fprintf(code_file, "and.w d%i,", (out_potential->base_instruction >> 9) & 7);
+                    fprintf(code_file, "and.w   d%i,", (out_potential->base_instruction >> 9) & 7);
                 }
                 else if ((out_potential->base_instruction & 0xf1ff) == ORD_W)
                 {
-                    fprintf(code_file, "or.w d%i,", (out_potential->base_instruction >> 9) & 7);
+                    fprintf(code_file, "or.w    d%i,", (out_potential->base_instruction >> 9) & 7);
                 }
                 else if ((out_potential->base_instruction & 0xffff0000) == MOVEM_L_TO_REG)
                 {
                     U32 c = count_bits(out_potential->base_instruction & 0xffff);
                     if (c <= 8)
                     {
-                        fprintf(code_file, "movem.l (a0)+,d0-d%i\n", c - 1);
+                        fprintf(code_file, "movem.l (a0)+,d0-d%i", c - 1);
                     }
                     else if (c == 9)
                     {
-                        fprintf(code_file, "movem.l (a0)+,d0-d7/a2\n");
+                        fprintf(code_file, "movem.l (a0)+,d0-d7/a2");
                     }
                     else
                     {
-                        fprintf(code_file, "movem.l (a0)+,d0-d7/a2-a%i\n", c - 8 - 1);
+                        fprintf(code_file, "movem.l (a0)+,d0-d7/a2-a%i", c - 8 - 1);
                     }
                 }
                 else if ((out_potential->base_instruction & 0xffff0000) == MOVEM_L_FROM_REG)
@@ -1709,7 +1786,7 @@ void halve_it()
                 else if ((out_potential->base_instruction & 0xffff0000) == MOVEM_W_TO_REG)
                 {
                     U32 c = count_bits(out_potential->base_instruction & 0xffff);
-                    fprintf(code_file, "movem.w (a0)+,d0-d%i\n", c - 1);
+                    fprintf(code_file, "movem.w (a0)+,d0-d%i", c - 1);
                 }
                 else if ((out_potential->base_instruction & 0xffff0000) == MOVEM_W_FROM_REG)
                 {
@@ -1741,7 +1818,7 @@ void halve_it()
                 // Output .l immediate value
                 *write_code++ = WRITE_WORD((U16)(out_potential->value >> 16));
                 *write_code++ = WRITE_WORD((U16)(out_potential->value));
-                cprintf("#$%04x,", out_potential->value);
+                cprintf("#$%08x,", out_potential->value);
                 break;
 
             default:
@@ -1753,28 +1830,144 @@ void halve_it()
             case EA_D_A1:
             case EA_MOVE_D_A1:
                 *write_code++ = WRITE_WORD((U16)out_potential->screen_offset - lea_offset);
-                cprintf("$%04x(a1)\n", out_potential->screen_offset - lea_offset);
+                cprintf("$%04x(a1)", out_potential->screen_offset - lea_offset);
+#ifdef PRINT_CODE
+                switch (out_potential->base_instruction)
+                {
+                case MOVEI_W:
+                    cprintf("        ;16\n");
+                    break;
+                case ANDI_W:
+                case ORI_W:
+                    cprintf("        ;20\n");
+                    break;
+                case MOVEI_L:
+                case ANDI_L:
+                case ORI_L:
+                    cprintf("        ;32\n");
+                    break;
+                }
+#endif
                 break;
 
             case EA_A1_POST:
             case EA_MOVE_A1_POST:
-                cprintf("(a1)+\n");
+                cprintf("(a1)+");
+#ifdef PRINT_CODE
+                switch (out_potential->base_instruction)
+                {
+                case MOVEI_W:
+                    cprintf("       ;12\n");
+                    break;
+                case ANDI_W:
+                case ORI_W:
+                    cprintf("       ;16\n");
+                    break;
+                case MOVEI_L:
+                    cprintf("       ;28\n");
+                    break;
+                case ANDI_L:
+                case ORI_L:
+                    cprintf("       ;28\n");
+                    break;
+                }
+#endif
+                break;
+
+            case EA_A1:
+            case EA_MOVE_A1:
+                cprintf("(a1)");
+#ifdef PRINT_CODE
+                switch (out_potential->base_instruction)
+                {
+                case MOVEI_W:
+                    cprintf("        ;12\n");
+                    break;
+                case ANDI_W:
+                case ORI_W:
+                    cprintf("        ;16\n");
+                    break;
+                case MOVEI_L:
+                    cprintf("        ;20\n");
+                    break;
+                case ANDI_L:
+                case ORI_L:
+                    cprintf("        ;28\n");
+                    break;
+                }
+#endif
                 break;
 
             default:
                 break;
             }
 
+#ifdef PRINT_CODE
+            // Write cycles for instructions that involve data registers
+            if ((out_potential->base_instruction & 0xffc0) == MOVED_W)
+            {
+                switch (out_potential->ea)
+                {
+                case EA_D_A1:
+                case EA_MOVE_D_A1:
+                    cprintf("            ;12\n");
+                    break;
+
+                case EA_A1_POST:
+                case EA_MOVE_A1_POST:
+                    cprintf("           ;8\n");
+                    break;
+
+                case EA_A1:
+                case EA_MOVE_A1:
+                    cprintf("            ;8\n");
+                    break;
+
+                default:
+                    break;
+                }
+            }
+            else if (((out_potential->base_instruction & 0xf1ff) == ANDD_W)||((out_potential->base_instruction & 0xf1ff) == ORD_W))
+            {
+                switch (out_potential->ea)
+                {
+                case EA_D_A1:
+                case EA_MOVE_D_A1:
+                    cprintf("            ;16\n");
+                    break;
+
+                case EA_A1_POST:
+                case EA_MOVE_A1_POST:
+                    cprintf("           ;8\n");
+                    break;
+
+                case EA_A1:
+                case EA_MOVE_A1:
+                    cprintf("            ;8\n");
+                    break;
+
+                default:
+                    break;
+                }
+
+            }
+            if ((out_potential->base_instruction & 0xffff0000) == MOVEM_W_TO_REG)
+            {
+                U32 c = count_bits(out_potential->base_instruction & 0xffff);
+                cprintf("        ;%i\n", 12 + 4 * c);
+            }
+            else if ((out_potential->base_instruction & 0xffff0000) == MOVEM_W_FROM_REG)
+            {
+                U32 c = count_bits(out_potential->base_instruction & 0xffff);
+                cprintf("        ;%i\n", 12 + 4 * c);
+            }
+
+#endif
+
             // Update lea counter at the end of the (a1)+/(a1) block
             if (out_potential->bytes_affected == 0xfffe)
             {
                 lea_offset = out_potential->screen_offset;
-            }
-
-
-            if (out_potential->ea == EA_A1 || out_potential->ea == EA_MOVE_A1)
-            {
-                cprintf("(a1)\n");
             }
 
             // Patch lea offset if this is the first instruction in a (a1)+/(a1) block
@@ -2002,23 +2195,12 @@ void halve_it()
     }
 }
 
-typedef struct _endianess
-{
-    union
-    {
-        U8 little;
-        U16 big;
-    };
-} endianness;
-
 int main(int argc, char ** argv)
 {
-    endianness endian;
-    endian.big = 1;
 
     // Let's say we load a .pi1 file
 #if defined(WIN32) || defined(WIN64) || defined(__APPLE__) || defined(__linux__) || defined(__CYGWIN__) || defined(__MINGW32__)
-    FILE *sprite = fopen("sprite.pi1","r");
+    FILE *sprite = fopen("sprites\\testsprite0.pi1","r");
     assert(sprite);
     fseek(sprite, 34, 0);
     fread(buf_origsprite, BUFFER_SIZE, 1, sprite);
@@ -2030,7 +2212,7 @@ int main(int argc, char ** argv)
 #endif
 
     // Byte swap the array if little endian
-    if (endian.little)
+#ifdef LITTLE_ENDIAN
     {
         int i;
         U16 *buf = (U16 *)buf_origsprite;
@@ -2040,6 +2222,7 @@ int main(int argc, char ** argv)
             buf++;
         }
     }
+#endif
 
     halve_it();
 
