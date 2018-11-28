@@ -47,6 +47,8 @@
 // - dml
 // - SPKR
 // - Lord knows who/what else
+//
+// If compiling using 68k g++ use these recommended switches: "-Os -fomit-frame-pointer -m68000"
 
 // Started 19 October 2018 20:30
 
@@ -220,7 +222,7 @@ static inline void __attribute((always_inline)) copy(U32 *src, U32 *dst, S32 siz
 
 static inline void clear(U16 *data, S32 size)
 {
-    size = size / 2;
+    size = size / 2 - 1;
     do
     {
         *data++ = 0;

@@ -10,6 +10,8 @@
                 trap    #1
                 addq.l  #6,SP
 
+                lea mystack,sp
+
 start:
 ;                movea.l screen,A0
 ;                move.l  #32000/4-1,D7
@@ -18,6 +20,7 @@ start:
 ;clrscr:         move.l  D0,(A0)+
 ;                dbra    D7,clrscr
 
+                bsr _Z8halve_itv
 
                 movem.l refpic+2,D0-D7
                 movem.l D0-D7,$FFFF8240.w
@@ -34,7 +37,14 @@ copyline:       movem.l (A0),D0-D6
                 dbra    D7,copyline
 
 
-;                bsr     sprite_code_shift_0
+; fixup pointers if needed
+                lea a,a0
+                move.l a0,d0
+                moveq #16+31+31-1,d7
+fixup_loop:     add.l d0,(a0)+
+                dbra d7,fixup_loop
+
+; draw all the things
 
                 lea a,a6
 ;                lea 17*4(a6),a6
@@ -43,7 +53,7 @@ copyline:       movem.l (A0),D0-D6
 draw_loop:      movea.l screen,A1
 
                 move.l a1,a0
-                moveq #-1,d0
+                moveq #0,d0
                 move.w #32000/4-1,d7
 clr_scr:        move.l d0,(a0)+
                 dbra d7,clr_scr
@@ -81,8 +91,15 @@ loop_count: ds.w 1
 
 screen:         DS.L 1
 
-refpic:         incbin "SPRITE.PI1"
+refpic:         incbin "sprites\\testsprite0.pi1"
+buf_origsprite=refpic+34
 
 
-a:
-                include "code.s"
+                include "brown.s"
+
+a=output_buf
+
+.bss
+
+    ds.l 3000
+mystack: ds.l 1
