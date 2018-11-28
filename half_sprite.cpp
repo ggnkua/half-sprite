@@ -48,7 +48,7 @@
 // - SPKR
 // - Lord knows who/what else
 
-// Started 19 Octomber 2018 20:30
+// Started 19 October 2018 20:30
 
 #define PRINT_CODE
 #define CYCLES_REPORT
@@ -79,6 +79,11 @@ FILE *code_file;
 
 // Print to both console and code 
 #define bprintf(...) dprintf(__VA_ARGS__); cprintf(__VA_ARGS__);
+
+// Visual Studio compiler has no idea what those __attribute thingies are, so let's make it ignore them
+#ifdef _MSC_VER
+#define __attribute(x)
+#endif
 
 // Set up a namespace for our typedefs (dml wisdom)
 
@@ -204,7 +209,7 @@ U16 *write_code = output_buf;
 // Our own ghetto memcpy (remember, we don't want to use any library stuff due to this potentially running on a real ST etc)
 // size must be multiple of 4. No checks done against this. Bite me.
 
-static inline void copy(U32 *src, U32 *dst, S32 size)
+static inline void __attribute((always_inline)) copy(U32 *src, U32 *dst, S32 size)
 {
     S32 count;
     for (count = (size >> 2) - 1; count >= 0; count--)
@@ -600,7 +605,8 @@ void halve_it()
         U16 *cached_values;
         U16 *write_arranged_values;
         POTENTIAL_CODE *potential_end;
-        U16 swaptable[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };                 // SWAP state of registers
+        U16 swaptable[8]; //= { 0, 0, 0, 0, 0, 0, 0, 0 };                 // SWAP state of registers
+        clear(swaptable, 16);
         U32 prev_offset;
         U16 distance_between_actions;
         short consecutive_instructions;
