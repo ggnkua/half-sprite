@@ -52,9 +52,12 @@
 
 // Started 19 October 2018 20:30
 
-#define PRINT_CODE
-#define CYCLES_REPORT
+// Should we print out the code in a source file? This can be assembled as usual
+//#define PRINT_CODE
+// Print debugging info to console?
 //#define PRINT_DEBUG
+// Print cycle and size reports?
+//#define REPORTS
 
 #include <assert.h>
 
@@ -85,6 +88,9 @@ FILE *code_file;
 // Visual Studio compiler has no idea what those __attribute thingies are, so let's make it ignore them
 #ifdef _MSC_VER
 #define __attribute(x)
+
+#pragma pack(2)
+
 #endif
 
 // Set up a namespace for our typedefs (dml wisdom)
@@ -311,8 +317,8 @@ void halve_it()
     // will be added, plus extra CPU overhead. Just sayin'.
     // (also, this will have an impact on every place in the code
     // where sprite dimensions can be hardcoded by the compiler)
-    short sprite_width = 32;            // Sprite width in pixels. -1=auto detect
-    short sprite_height = 32;           // Sprite height in pixels. -1=auto detect
+    short sprite_width = 64;            // Sprite width in pixels. -1=auto detect
+    short sprite_height = 61;           // Sprite height in pixels. -1=auto detect
     short screen_width = 320;           // Actual screen width in pixels
     short screen_plane_words = screen_width / 16;
     // General constants
@@ -324,9 +330,9 @@ void halve_it()
     // that has to be written into a 4bpp backdrop
     short num_mask_planes = 4;
     int use_masking = 1;                // Do we actually want to mask the sprites or is it going to be a special case? (for example, 1bpp sprites)
-    int generate_mask = 0;              // Should we auto generate mask or will user supply his/her own?
+    int generate_mask = 1;              // Should we auto generate mask or will user supply his/her own?
     int outline_mask = 0;               // Should we outline mask?
-    int horizontal_clip = 1;            // Should we output code that enables horizontal clip for x<0 and x>screen_width-sprite_width? (this can lead to HUGE amounts of outputted code depending on sprite width!)
+    int horizontal_clip = 0;            // Should we output code that enables horizontal clip for x<0 and x>screen_width-sprite_width? (this can lead to HUGE amounts of outputted code depending on sprite width!)
     int generate_background_save_restore_code = 0;
     short i, j, k;
     short loop_count;
@@ -381,7 +387,7 @@ void halve_it()
     sprite_width = sprite_width + 16;
     S16 sprite_words = sprite_width / 16;       // How many words is our sprite horizontally including the extra word for shifts (bitplane independant)
 
-    S16 num_actions;
+    S16 num_actions = 0;
     S16 shift;
     POTENTIAL_CODE *out_potential;
 
@@ -421,24 +427,34 @@ void halve_it()
         cprintf("sprite_code_shift_15\n");
     }
 
-#ifdef CYCLES_REPORT
-        U32 cycles_unoptimised;
-        U32 cycles_saved_from_movem_l;
-        U32 cycles_saved_from_movem_w;
-        U32 cycles_saved_from_move_l;
-        U32 cycles_saved_from_movep;
-        U32 cycles_saved_from_and_l_or_l;
-        U32 cycles_saved_from_registers;
-        U32 cycles_saved_from_post_increment;
+#ifdef REPORTS
+    // Cycle counters
+    U32 cycles_unoptimised;
+    U32 cycles_saved_from_movem_l;
+    U32 cycles_saved_from_movem_w;
+    U32 cycles_saved_from_move_l;
+    U32 cycles_saved_from_movep;
+    U32 cycles_saved_from_and_l_or_l;
+    U32 cycles_saved_from_registers;
+    U32 cycles_saved_from_post_increment;
+    // Max buffers' sizes
+    U32 max_marks = 0;
+    S32 max_freqs = 0;
+    U32 max_potentials = 0;
+    U32 max_sprite_data = 0;
+    // TODO: keep flags to check whether each optimisation pass is used at all - this can cut down the code size
+    // TODO: max_potentials is a bit bothersome for now as we clear it every with every for iteration. For now in the case of generating ST code either the clear() call has to be modified before generating the ST code, or the generated code has to be trimmed
 #endif
-    
+    POTENTIAL_CODE *potential_end = potential;
+    U16 *write_sprite_data = sprite_data;
+
     // Main - repeats 16 times for 16 preshifts (plus 2*(sprite_width-1) if we're clipping)
     for (shift = 0; shift < shift_count; shift++)
     {
         S16 x, y;
         U16 *buf = (U16 *)buf_shift;
         U16 *mask = (U16 *)buf_mask;
-#ifdef CYCLES_REPORT
+#ifdef REPORTS
         // Reset cycle counters
         cycles_unoptimised = 0;
         cycles_saved_from_movem_l = 0;
@@ -448,6 +464,11 @@ void halve_it()
         cycles_saved_from_and_l_or_l = 0;
         cycles_saved_from_registers = 0;
         cycles_saved_from_post_increment = 0;
+        // Update max values
+        max_marks = max(max_marks, num_actions * sizeof(MARK));
+        // max_freqs updated after the frequencies table is populated
+        max_potentials = max(max_potentials, (U32)((U8 *)potential_end - (U8 *)potential));
+        max_sprite_data = max(max_sprite_data, (U32)((U8 *)write_sprite_data - (U8 *)sprite_data));
 #endif
 
         if (shift == 0 || (shift_count > 16 && (shift == 16 || shift == 16 + (sprite_width - 16) - 1)))
@@ -599,14 +620,13 @@ void halve_it()
         U16 val_or;        
         out_potential = potential;                      // Reset potential moves pointer
         *write_pointers++ = WRITE_LONG((U8 *)write_code - (U8 *)output_buf);    // Mark down the entry point for this routine
-        U16 *write_sprite_data = sprite_data;
+        write_sprite_data = sprite_data;
         MARK *marks_end;                                // End of marks buffer
         U16 mark_to_search_for;
         S16 num_freqs;
         POTENTIAL_CODE *cacheable_code;
         U16 *cached_values;
         U16 *write_arranged_values;
-        POTENTIAL_CODE *potential_end;
         U16 swaptable[8]; //= { 0, 0, 0, 0, 0, 0, 0, 0 };                 // SWAP state of registers
         clear(swaptable, 16);
         U32 prev_offset;
@@ -648,7 +668,7 @@ void halve_it()
                             cur_mark->value_and = val_and;
                             cur_mark++;
                             num_actions++;
-#ifdef CYCLES_REPORT
+#ifdef REPORTS
                             cycles_unoptimised = cycles_unoptimised + 20;   // and.w #xxx,d(An)
 #endif
                             goto skipword;
@@ -662,7 +682,7 @@ void halve_it()
                             cur_mark->value_and = 0;
                             cur_mark++;
                             num_actions++;
-#ifdef CYCLES_REPORT
+#ifdef REPORTS
                             cycles_unoptimised = cycles_unoptimised + 16;   // move.w #xxx,d(An)
 #endif
                             goto skipword;
@@ -679,11 +699,11 @@ void halve_it()
                         cur_mark->value_and = val_and;
                         cur_mark++;
                         num_actions++;
-#ifdef CYCLES_REPORT
+#ifdef REPORTS
                         cycles_unoptimised = cycles_unoptimised + 20;   // and.w #xxx,d(An)
 #endif
                         goto skipword;
-#ifdef CYCLES_REPORT
+#ifdef REPORTS
                         cycles_unoptimised = cycles_unoptimised + 20;   // and.w #xxx,d(An)
 #endif
                     }
@@ -704,7 +724,7 @@ void halve_it()
                         // A "move" instruction will suffice 
                         cur_mark->action = A_MOVE;
                         cur_mark->value_and = 0;
-#ifdef CYCLES_REPORT
+#ifdef REPORTS
                         cycles_unoptimised = cycles_unoptimised + 16;   // move.w #xxx,d(An)
 #endif
                     }
@@ -714,7 +734,7 @@ void halve_it()
                         // We only need to OR in this case. Kudos to Leonard of Oxygene for the idea.
                         cur_mark->action = A_OR;
                         cur_mark->value_and = 0;
-#ifdef CYCLES_REPORT
+#ifdef REPORTS
                         cycles_unoptimised = cycles_unoptimised + 20;   // ori.w #xxx,d(An)
 #endif
                     }
@@ -723,7 +743,7 @@ void halve_it()
                         // Generic case - we need to AND the mask and OR the sprite value
                         cur_mark->action = A_AND_OR;
                         cur_mark->value_and = val_and;
-#ifdef CYCLES_REPORT
+#ifdef REPORTS
                         cycles_unoptimised = cycles_unoptimised + 40;   // andi.w #xxx,d(An) / ori.w #yyy,d(An)
 #endif
                     }
@@ -733,7 +753,7 @@ void halve_it()
                     // We won't mask anything, so just OR things
                     cur_mark->action = A_OR;
                     cur_mark->value_and = 0;
-#ifdef CYCLES_REPORT
+#ifdef REPORTS
                     cycles_unoptimised = cycles_unoptimised + 20;   // or.w #xxx,d(An)
 #endif
                 }
@@ -758,7 +778,7 @@ void halve_it()
             plane_counter = 0;
 
         }
-#ifdef CYCLES_REPORT
+#ifdef REPORTS
         cycles_unoptimised = cycles_unoptimised + 16;   // RTS
 #endif
 
@@ -837,7 +857,7 @@ void halve_it()
                     }
                     num_moves = num_moves & -2;                         // Even out the number as we can't move half a longword!
 
-#ifdef CYCLES_REPORT
+#ifdef REPORTS
                     cycles_saved_from_movem_l = cycles_saved_from_movem_l + 8 * (num_moves / 2 - 3); // movem.l (a0)+,regs / movem.l regs,d(A1)
 #endif
 
@@ -938,7 +958,7 @@ void halve_it()
                 }
                 if (num_moves >= 3)
                 {
-#ifdef CYCLES_REPORT
+#ifdef REPORTS
                     cycles_saved_from_movem_w = cycles_saved_from_movem_w + 8 * (num_moves - 3); // movem.w (a0)+,regs / movem.w regs,d(A1)
 #endif
                     out_potential[1].screen_offset = cur_mark->offset;  // Save screen offset for the second movem
@@ -1015,7 +1035,7 @@ void halve_it()
 
                     i = i - 1;
 
-#ifdef CYCLES_REPORT
+#ifdef REPORTS
                     cycles_saved_from_move_l = cycles_saved_from_move_l + 8; // move.l #xxx,d(An)
 #endif
                 }
@@ -1060,7 +1080,7 @@ void halve_it()
                         ((cur_mark[2].value_or & 0xff00) == 0) &&
                         ((cur_mark[3].value_or & 0xff00) == 0))
                     {
-#ifdef CYCLES_REPORT
+#ifdef REPORTS
                         cycles_saved_from_movep = cycles_saved_from_movep + 4 * 32 - 12 - 24;
 #endif
                         U32 longval;
@@ -1120,7 +1140,7 @@ void halve_it()
                         out_potential->bytes_affected = 4;          // One longword s'il vous plait
                         dprintf("andi.w #$%04x,$%04x(a1) - andi.w #$%04x,$%04x(a1) -> andi.l #$%08x,$%04x(a1)\n", cur_mark->value_and, cur_mark->offset, cur_mark[1].value_and, cur_mark[1].offset, out_potential->value, cur_mark->offset);
                         out_potential++;
-#ifdef CYCLES_REPORT
+#ifdef REPORTS
                         cycles_saved_from_and_l_or_l = cycles_saved_from_and_l_or_l + (2 * 20 - 32); // 2xandi.w + 2xori.w -> andi.l + ori.l
 #endif
                     }
@@ -1138,7 +1158,7 @@ void halve_it()
 
                     i = i - 1;
 
-#ifdef CYCLES_REPORT
+#ifdef REPORTS
                     cycles_saved_from_and_l_or_l = cycles_saved_from_and_l_or_l + (2 * 20 - 32); // 2xandi.w + 2xori.w -> andi.l + ori.l
 #endif
                 }
@@ -1168,7 +1188,7 @@ void halve_it()
                         cur_mark++;
                         cur_mark->action = A_DONE;
                         i = i - 1;
-#ifdef CYCLES_REPORT
+#ifdef REPORTS
                         cycles_saved_from_and_l_or_l = cycles_saved_from_and_l_or_l + 2 * (2 * 20 - 32); // 2xandi.w -> andi.l
 #endif
                     }
@@ -1189,7 +1209,7 @@ void halve_it()
                     cur_mark++;
                     cur_mark->action = A_DONE;
                     i = i - 1;
-#ifdef CYCLES_REPORT
+#ifdef REPORTS
                     cycles_saved_from_and_l_or_l = cycles_saved_from_and_l_or_l + 2 * (2 * 20 - 32); // 2xori.w -> ori.l
 #endif
                 }
@@ -1260,6 +1280,10 @@ void halve_it()
             }
             cur_mark++;
         }
+
+#ifdef REPORTS
+        max_freqs = max(max_freqs, (U32)num_freqs*sizeof(FREQ));
+#endif
 
         // Now, sort the list by frequency
         
@@ -1412,7 +1436,7 @@ void halve_it()
                             dprintf("swap d%i\n", i >> 1);
                             swaptable[i >> 1] = 1;
                             out_potential->value |= EMIT_SWAP;
-#ifdef CYCLES_REPORT
+#ifdef REPORTS
                             cycles_saved_from_registers = cycles_saved_from_registers - 4;  // Negative gain!
 #endif
                         }
@@ -1431,7 +1455,7 @@ void halve_it()
                             dprintf("swap d%i\n", i >> 1);
                             out_potential->value |= EMIT_SWAP;
                             swaptable[i >> 1] = 1;
-#ifdef CYCLES_REPORT
+#ifdef REPORTS
                             cycles_saved_from_registers = cycles_saved_from_registers - 4;  // Negative gain!
 #endif
                         }
@@ -1446,7 +1470,7 @@ void halve_it()
                             dprintf("swap d%i\n", i >> 1);
                             out_potential->value |= EMIT_SWAP;
                             swaptable[i >> 1] = 0;
-#ifdef CYCLES_REPORT
+#ifdef REPORTS
                             cycles_saved_from_registers = cycles_saved_from_registers - 4;  // Negative gain!
 #endif
                         }
@@ -1462,7 +1486,7 @@ void halve_it()
                         out_potential->base_instruction = MOVED_W;          // Modify instruction
                         out_potential->base_instruction |= i >> 1;          // Register field (D0-D7)
                         dprintf("move.w #$%04x,$%04x(a1) -> move.w d%i,$%04x(a1)\n",out_potential->value,out_potential->screen_offset,i>>1,out_potential->screen_offset);
-#ifdef CYCLES_REPORT
+#ifdef REPORTS
                         cycles_saved_from_registers = cycles_saved_from_registers + 4;
 #endif
                         break;
@@ -1470,7 +1494,7 @@ void halve_it()
                         out_potential->base_instruction = ANDD_W;           // Modify instruction
                         out_potential->base_instruction |= (i >> 1) << 9;   // Register field (D0-D7)
                         dprintf("andi.w #$%04x,$%04x(a1) -> and.w d%i,$%04x(a1)\n", out_potential->value, out_potential->screen_offset, i >> 1, out_potential->screen_offset);
-#ifdef CYCLES_REPORT
+#ifdef REPORTS
                         cycles_saved_from_registers = cycles_saved_from_registers + 4;
 #endif
                         break;
@@ -1478,7 +1502,7 @@ void halve_it()
                         out_potential->base_instruction = ORD_W;            // Modify instruction
                         out_potential->base_instruction |= (i >> 1) << 9;   // Register field (D0-D7)
                         dprintf("ori.w  #$%04x,$%04x(a1) -> or.w  d%i,$%04x(a1)\n", out_potential->value, out_potential->screen_offset, i >> 1, out_potential->screen_offset);
-#ifdef CYCLES_REPORT
+#ifdef REPORTS
                         cycles_saved_from_registers = cycles_saved_from_registers + 4;
 #endif
                         break;
@@ -1545,7 +1569,7 @@ void halve_it()
                         // We have a good post-increment case so let's patch some instructions up
                         POTENTIAL_CODE *patch_instructions = out_potential - consecutive_instructions - 1;
                         patch_instructions->bytes_affected = 0xffff;        // Signal lea emission at the start of the block
-#ifdef CYCLES_REPORT
+#ifdef REPORTS
                         cycles_saved_from_post_increment = cycles_saved_from_post_increment - 8;    // Initial lea cost, will be compensated from the loop below
 #endif 
                         loop_count = consecutive_instructions - 1;
@@ -1558,7 +1582,7 @@ void halve_it()
                                 {
                                     patch_instructions->ea = EA_A1;
                                     dprintf("and/or.w <ea>,$%04x(a1) -> (a1)\n", patch_instructions->screen_offset);
-#ifdef CYCLES_REPORT
+#ifdef REPORTS
                                     cycles_saved_from_post_increment = cycles_saved_from_post_increment + 4;
 #endif 
 
@@ -1567,7 +1591,7 @@ void halve_it()
                                 {
                                     patch_instructions->ea = EA_A1_POST;
                                     dprintf("and/or.w <ea>,$%04x(a1) -> (a1)+\n", patch_instructions->screen_offset);
-#ifdef CYCLES_REPORT
+#ifdef REPORTS
                                     cycles_saved_from_post_increment = cycles_saved_from_post_increment + 4;
 #endif 
                                 }
@@ -1577,7 +1601,7 @@ void halve_it()
                                 {
                                     patch_instructions->ea = EA_MOVE_A1;
                                     dprintf("move.w <ea>,$%04x(a1) -> (a1)\n", patch_instructions->screen_offset);
-#ifdef CYCLES_REPORT
+#ifdef REPORTS
                                     cycles_saved_from_post_increment = cycles_saved_from_post_increment + 4;
 #endif 
                                 }
@@ -1585,7 +1609,7 @@ void halve_it()
                                 {
                                     patch_instructions->ea = EA_MOVE_A1_POST;
                                     dprintf("move.w <ea>,$%04x(a1) -> (a1)+\n", patch_instructions->screen_offset);
-#ifdef CYCLES_REPORT
+#ifdef REPORTS
                                     cycles_saved_from_post_increment = cycles_saved_from_post_increment + 4;
 #endif 
                                 }
@@ -1599,14 +1623,14 @@ void halve_it()
                         case EA_D_A1:
                             patch_instructions->ea = EA_A1;
                             dprintf("and/or.w <ea>,$%04x(a1) -> (a1)\n", patch_instructions->screen_offset);
-#ifdef CYCLES_REPORT
+#ifdef REPORTS
                             cycles_saved_from_post_increment = cycles_saved_from_post_increment + 4;
 #endif 
                             break;
                         case EA_MOVE_D_A1:
                             patch_instructions->ea = EA_MOVE_A1;
                             dprintf("move.w <ea>,$%04x(a1) -> (a1)\n", patch_instructions->screen_offset);
-#ifdef CYCLES_REPORT
+#ifdef REPORTS
                             cycles_saved_from_post_increment = cycles_saved_from_post_increment + 4;
 #endif 
                             break;
@@ -1630,7 +1654,7 @@ void halve_it()
         dprintf("\n\nFinal code:\n-----------\n");
         cprintf(";----------------------------------------------------\n");
         cprintf("; Frame %i\n", shift);
-#ifdef CYCLES_REPORT
+#ifdef REPORTS
         bprintf("; Stats:\n");
         bprintf("; Non-optimal number of cycles: %i\n", cycles_unoptimised);
         bprintf("; Savings from movem.l        : %i\n", cycles_saved_from_movem_l);
@@ -2201,18 +2225,40 @@ void halve_it()
             }
         }
     }
+#ifdef REPORTS
+    printf("Max Buffer sizes (bytes)\n");
+    printf("------------------------\n");
+    printf("marks      : %i\n", max_marks);
+    printf("freqs      : %i\n", max_freqs);
+    printf("potential  : %i\n", max_potentials);
+    printf("sprite_data: %i\n", max_sprite_data);
+    printf("output_buf : %i\n", (U8 *)write_code - (U8 *)output_buf);
+#endif
 }
 
 int main(int argc, char ** argv)
 {
 
-    // Let's say we load a .pi1 file
+    // Let's say we load a file
 #if defined(WIN32) || defined(WIN64) || defined(__APPLE__) || defined(__linux__) || defined(__CYGWIN__) || defined(__MINGW32__)
-    FILE *sprite = fopen("sprites\\testsprite0.pi1","r");
-    assert(sprite);
-    fseek(sprite, 34, 0);
-    fread(buf_origsprite, BUFFER_SIZE, 1, sprite);
-    fclose(sprite);
+    if (0)
+    {
+        // PI1
+        FILE *sprite = fopen("sprites\\testsprite0.pi1", "r");
+        assert(sprite);
+        fseek(sprite, 34, 0);
+        fread(buf_origsprite, BUFFER_SIZE, 1, sprite);
+        fclose(sprite);
+    }
+    else
+    {
+        // NEO
+        FILE *sprite = fopen("flarex.neo", "r");
+        assert(sprite);
+        fseek(sprite, 128, 0);
+        fread(buf_origsprite, BUFFER_SIZE, 1, sprite);
+        fclose(sprite);
+    }
 #endif
 
 #ifdef PRINT_CODE
