@@ -8,9 +8,9 @@
 //           -osssssssss/-                                ./ssssssssso-
 //         `+sssssssso:`                                     -ossssssss+`
 //        -sssssssso-                                          -ossssssss-
-//       :ssssssss:                                              :ssssssss/
-//      /ssssssso`                       `````                    `+sssssss/
-//     /sssssss+                   `-/ossssssssssssooooooo+`        /sssssss/
+//       :ssssssss:                                              :ssssssss\
+//      /ssssssso`                       `````                    `+sssssss\
+//     /sssssss+                   `-/ossssssssssssooooooo+`        /sssssss\
 //    -sssssss+                  :ossssssssssssssssssssssss`         /sssssss:
 //   `ossssss+                 -ossssssssssssssssssssssssss`          +sssssss`
 //   /sssssss.                :ssssssso-`    `/ssssss+`````           `sssssss/
@@ -21,7 +21,7 @@
 //  /sssssso                -sssssss`            ossssss:               +ssssss+
 //  :sssssso`               .sssssss-           `sssssss.               ossssss/
 //  .sssssss.                +sssssss.          +sssssso               .sssssss-
-//  `ossssss/                .ssssssss:`      -osssssss.               /sssssss`
+//  `ossssss.                .ssssssss:`      -osssssss.               /sssssss`
 //   :sssssss.                .osssssssso+++osssssssso.               `sssssss/
 //   `osssssso`                `/sssssssssssssssssso:                 +sssssso`
 //    -sssssss+                  `-/ossssssssssso/.                  /sssssss-
@@ -57,7 +57,7 @@
 // Print debugging info to console?
 //#define PRINT_DEBUG
 // Print cycle and size reports?
-//#define REPORTS
+#define REPORTS
 
 #include <assert.h>
 
@@ -338,6 +338,9 @@ void halve_it()
     short loop_count;
 
     // Bring a copy of the sprite to our screen buffer
+    // TODO: this sucks if we have a small sprite needing a large buffer
+    //       Sprite scanner needs to become independent of the buffer dimensions
+    //       (i.e. keep different counters for source/destination widths and heights
     copy((U32 *)buf_origsprite, (U32 *)buf_shift, BUFFER_SIZE);
 
     // Detect sprite dimensions if requested
@@ -442,7 +445,16 @@ void halve_it()
     S32 max_freqs = 0;
     U32 max_potentials = 0;
     U32 max_sprite_data = 0;
-    // TODO: keep flags to check whether each optimisation pass is used at all - this can cut down the code size
+    // Optimisation stages usage
+    U32 use_moveml = 0;
+    U32 use_movemw = 0;
+    U32 use_movel = 0;
+    U32 use_movep = 0;
+    U32 use_andil_oril_pair = 0;
+    U32 use_andil_oril = 0;
+    U32 use_regs = 0;
+    U32 use_andiw_oriw = 0;
+    U32 use_post_opts = 0;
     // TODO: max_potentials is a bit bothersome for now as we clear it every with every for iteration. For now in the case of generating ST code either the clear() call has to be modified before generating the ST code, or the generated code has to be trimmed
 #endif
     POTENTIAL_CODE *potential_end = potential;
@@ -612,30 +624,31 @@ void halve_it()
             }
         }
 
-        U32 off = 0;
-        num_actions = 0;
-        MARK *cur_mark = mark_buf;
-        mask = (U16 *)buf_mask;
-        U16 val_and = *mask;
-        U16 val_or;        
+        U32 off = 0;                                    // Current screen offset being scanned
+        num_actions = 0;                                // How many actions this sprite needs (and/or/movem/move etc)
+        MARK *cur_mark = mark_buf;                      // Current action's mark info
+        mask = (U16 *)buf_mask;                         // Current mask offset being scanned
+        U16 val_and = *mask;                            // Current mask value (AND)
+        U16 val_or;                                     // Current sprite value (OR)
         out_potential = potential;                      // Reset potential moves pointer
         *write_pointers++ = WRITE_LONG((U8 *)write_code - (U8 *)output_buf);    // Mark down the entry point for this routine
-        write_sprite_data = sprite_data;
+        write_sprite_data = sprite_data;                // Reset pointer for any needed sprite data (movem.l (a0)+,<regs> for example)
         MARK *marks_end;                                // End of marks buffer
-        U16 mark_to_search_for;
-        S16 num_freqs;
-        POTENTIAL_CODE *cacheable_code;
-        U16 *cached_values;
-        U16 *write_arranged_values;
-        U16 swaptable[8]; //= { 0, 0, 0, 0, 0, 0, 0, 0 };                 // SWAP state of registers
+        U16 mark_to_search_for;                         // What kind of mark type to look when scanning for andi/ori pairs (changes if we generate sprite mask or not)
+        S16 num_freqs;                                  // How many different distinct values we have in current frame
+        POTENTIAL_CODE *cacheable_code;                 // Start of marks/actions that can be cached in data registers
+        U16 *cached_values;                             // Holds cached register values
+        U16 *write_arranged_values;                     // Points to where we'll store the register values in the final blob
+        // Note: don't initialise values as gcc really really wants to use memset for this. And no amount of fiddling with switches could eliminate this O_o
+        U16 swaptable[8]; //= { 0, 0, 0, 0, 0, 0, 0, 0 }; // SWAP state of registers
         clear(swaptable, 16);
-        U32 prev_offset;
-        U16 distance_between_actions;
-        short consecutive_instructions;
-        U16 *lea_patch_address;
-        U16 lea_offset;
-        U16 *read_sprite_data;
-        U16 *first_lea_offset;
+        U32 prev_offset;                                // Holds the previous screen offset when scanning for post-increment optimisations
+        U16 distance_between_actions;                   // How many bytes are two consecutive actions apart
+        S16 consecutive_instructions;                   // How many consecutive instructions we found
+        U16 *lea_patch_address;                         // Where in the final blob is the lea offset we need to patch
+        U16 lea_offset;                                 // And which value do we need to plug into that offset
+        U16 *read_sprite_data;                          // Points to current frame's start of sprite data (if any)
+        U16 *first_lea_offset;                          // Where in the final blob is the first lea offset we need to patch
 
         // Step 1: determine what actions we need to perform
         //         in order to draw the sprite on screen
@@ -859,6 +872,7 @@ void halve_it()
 
 #ifdef REPORTS
                     cycles_saved_from_movem_l = cycles_saved_from_movem_l + 8 * (num_moves / 2 - 3); // movem.l (a0)+,regs / movem.l regs,d(A1)
+                    use_moveml = 1;                                   // Yes, we used this code at least once
 #endif
 
                     out_potential[1].screen_offset = cur_mark->offset;  // Save screen offset for the second movem
@@ -960,6 +974,7 @@ void halve_it()
                 {
 #ifdef REPORTS
                     cycles_saved_from_movem_w = cycles_saved_from_movem_w + 8 * (num_moves - 3); // movem.w (a0)+,regs / movem.w regs,d(A1)
+                    use_movemw = 1;                               // Yes, we used this code at least once
 #endif
                     out_potential[1].screen_offset = cur_mark->offset;  // Save screen offset for the second movem
                     dprintf("movem.w (a0)+,d0-d%i\nmovem.w d0-d%i,$%04x(a1)\ndc.w ", num_moves - 1, num_moves - 1, cur_mark->offset);
@@ -1037,6 +1052,7 @@ void halve_it()
 
 #ifdef REPORTS
                     cycles_saved_from_move_l = cycles_saved_from_move_l + 8; // move.l #xxx,d(An)
+                    use_moveml = 1;                                 // Yes, we used this code at least once
 #endif
                 }
             }
@@ -1082,6 +1098,7 @@ void halve_it()
                     {
 #ifdef REPORTS
                         cycles_saved_from_movep = cycles_saved_from_movep + 4 * 32 - 12 - 24;
+                        use_movep = 1;                                     // Yes, we used this code at least once
 #endif
                         U32 longval;
                         longval = ((cur_mark->value_or << 16) & 0xff000000) | ((cur_mark[1].value_or << 16) & 0x00ff0000) | ((cur_mark[2].value_or >> 8) & 0x0000ff00) | (cur_mark[3].value_or & 0x000000ff);
@@ -1142,6 +1159,7 @@ void halve_it()
                         out_potential++;
 #ifdef REPORTS
                         cycles_saved_from_and_l_or_l = cycles_saved_from_and_l_or_l + (2 * 20 - 32); // 2xandi.w + 2xori.w -> andi.l + ori.l
+                        use_andil_oril_pair = 1;                    // Yes, we used this code at least once
 #endif
                     }
 
@@ -1190,6 +1208,7 @@ void halve_it()
                         i = i - 1;
 #ifdef REPORTS
                         cycles_saved_from_and_l_or_l = cycles_saved_from_and_l_or_l + 2 * (2 * 20 - 32); // 2xandi.w -> andi.l
+                        use_andiw_oriw = 1;                         // Yes, we used this code at least once
 #endif
                     }
                 }
@@ -1211,6 +1230,7 @@ void halve_it()
                     i = i - 1;
 #ifdef REPORTS
                     cycles_saved_from_and_l_or_l = cycles_saved_from_and_l_or_l + 2 * (2 * 20 - 32); // 2xori.w -> ori.l
+                    use_andiw_oriw = 1;                         // Yes, we used this code at least once
 #endif
                 }
             }
@@ -1282,7 +1302,7 @@ void halve_it()
         }
 
 #ifdef REPORTS
-        max_freqs = max(max_freqs, (U32)num_freqs*sizeof(FREQ));
+        max_freqs = max(max_freqs, (S32)(num_freqs*sizeof(FREQ)));
 #endif
 
         // Now, sort the list by frequency
@@ -1292,6 +1312,10 @@ void halve_it()
         // Write the top 16 values (or less) to the sprite data buffer
         // There's a small chance that there are less than 16 values
         // TODO: if the sum of frequent values is not worth the movem.l, don't output anything
+
+#ifdef REPORTS
+        use_regs = 1;                         // Yes, we used this code at least once
+#endif
 
         num_freqs = num_freqs & -2; // Even the number of values as we're gonna movem.l them
         freqptr = &freqtab[num_freqs];
@@ -1410,7 +1434,6 @@ void halve_it()
             {
                 if (cur_value == cached_values[i])
                 {
-#if 1
                     if ((i & 1) == 1)
                     {
                         // Low word required. Does the data register have that?
@@ -1441,45 +1464,6 @@ void halve_it()
 #endif
                         }
                     }
-#else
-                    if ((i & 1) == 0)
-                    {
-                        // We need the high word of the register
-                        if (swaptable[i >> 1])
-                        {
-                            // The register is already swapped, do nothing
-                        }
-                        else
-                        {
-                            // We need to emit SWAP, so place a mark at the upper 16 bits (which are unused)
-                            dprintf("swap d%i\n", i >> 1);
-                            out_potential->value |= EMIT_SWAP;
-                            swaptable[i >> 1] = 1;
-#ifdef REPORTS
-                            cycles_saved_from_registers = cycles_saved_from_registers - 4;  // Negative gain!
-#endif
-                        }
-
-                    }
-                    else
-                    {
-                        // We need the low word of the register
-                        if (swaptable[i >> 1])
-                        {
-                            // We need to emit SWAP, so place a mark at the upper 16 bits (which are unused)
-                            dprintf("swap d%i\n", i >> 1);
-                            out_potential->value |= EMIT_SWAP;
-                            swaptable[i >> 1] = 0;
-#ifdef REPORTS
-                            cycles_saved_from_registers = cycles_saved_from_registers - 4;  // Negative gain!
-#endif
-                        }
-                        else
-                        {
-                            // The register is already swapped, do nothing
-                        }
-                    }
-#endif
                     switch (out_potential->base_instruction)
                     {
                     case MOVEI_W:
@@ -1571,6 +1555,7 @@ void halve_it()
                         patch_instructions->bytes_affected = 0xffff;        // Signal lea emission at the start of the block
 #ifdef REPORTS
                         cycles_saved_from_post_increment = cycles_saved_from_post_increment - 8;    // Initial lea cost, will be compensated from the loop below
+                        use_post_opts = 1;                         // Yes, we used this code at least once
 #endif 
                         loop_count = consecutive_instructions - 1;
                         do
@@ -2233,6 +2218,18 @@ void halve_it()
     printf("potential  : %i\n", max_potentials);
     printf("sprite_data: %i\n", max_sprite_data);
     printf("output_buf : %i\n", (U8 *)write_code - (U8 *)output_buf);
+    printf("\n");
+    printf("Optimisation routines usage\n");
+    printf("---------------------------\n");
+    printf("movem.l:                %s\n", (use_moveml ? "yes" : "no"));
+    printf("movem.w:                %s\n", (use_movemw ? "yes" : "no"));
+    printf("move.l:                 %s\n", (use_movel ? "yes" : "no"));
+    printf("movep.l:                %s\n", (use_moveml ? "yes" : "no"));
+    printf("andi.l/ori.l pair:      %s\n", (use_andil_oril_pair ? "yes" : "no"));
+    printf("andi.l/ori.l:           %s\n", (use_andil_oril ? "yes" : "no"));
+    printf("Register optimisations: %s\n", (use_regs ? "yes" : "no"));
+    printf("andi.w/ori.w:           %s\n", (use_andiw_oriw ? "yes" : "no"));
+    printf("Post-increment:         %s\n", (use_post_opts ? "yes" : "no"));
 #endif
 }
 
@@ -2241,7 +2238,7 @@ int main(int argc, char ** argv)
 
     // Let's say we load a file
 #if defined(WIN32) || defined(WIN64) || defined(__APPLE__) || defined(__linux__) || defined(__CYGWIN__) || defined(__MINGW32__)
-    if (0)
+    if (1)
     {
         // PI1
         FILE *sprite = fopen("sprites\\testsprite0.pi1", "r");
