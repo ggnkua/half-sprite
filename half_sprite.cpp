@@ -317,8 +317,8 @@ void halve_it()
     // will be added, plus extra CPU overhead. Just sayin'.
     // (also, this will have an impact on every place in the code
     // where sprite dimensions can be hardcoded by the compiler)
-    short sprite_width = 64;            // Sprite width in pixels. -1=auto detect
-    short sprite_height = 61;           // Sprite height in pixels. -1=auto detect
+    short sprite_width = 32;            // Sprite width in pixels. -1=auto detect
+    short sprite_height = 32;           // Sprite height in pixels. -1=auto detect
     short screen_width = 320;           // Actual screen width in pixels
     short screen_plane_words = screen_width / 16;
     // General constants
@@ -399,7 +399,7 @@ void halve_it()
     // (we'll shift the sprite sprite_width times left and as many to the right, for clipping)
 
     U32 *write_pointers = (U32 *)write_code;
-    S16 shift_count = 15;
+    S16 shift_count = 16;
     if (horizontal_clip)
     {
         write_code = write_code + (16 + (sprite_width - 16 - 1) * 2) * 2;
@@ -943,11 +943,13 @@ void halve_it()
         // move.l - 24 cycles
         // move.w - 16 cycles
         // movem.w - 24+8*num_regs
-        // num_regs  1  2  3  4  5  6  7  8  9  10 11
-        // move.l   24 48 72 96
-        // move.w   16 32 48 64
-        // movem    32 40 48 56
-        // It seems like for anything above 3 registers is good for movem.w
+        // num_regs (word size)  1  2  3  4  5  6  7  8  9  10 11 
+        // move.l                  24    48    72    96
+        // move.w               16 32 48 64 80 96
+        // movem pair           32 40 48 56 64 72 80 88
+        // It seems like for anything above and equal 7 registers is good for movem.w 
+        // (good luck finding a sequence like that, but anyway!
+        //  Could turn this off if it takes too many cycles at runtime)
         
         dprintf("\nmovem.w optimisations\n---------------------\n");
         cur_mark = mark_buf;
@@ -970,7 +972,7 @@ void halve_it()
                     num_moves++;
                     temp_mark++;
                 }
-                if (num_moves >= 3)
+                if (num_moves >= 7)
                 {
 #ifdef REPORTS
                     cycles_saved_from_movem_w = cycles_saved_from_movem_w + 8 * (num_moves - 3); // movem.w (a0)+,regs / movem.w regs,d(A1)
@@ -1688,7 +1690,7 @@ void halve_it()
                 {
                     *write_code++ = WRITE_WORD(MOVEM_L_TO_REG >> 16); // movem.l (a0)+,register_list
                     *write_code++ = WRITE_WORD((1 << ((num_freqs) >> 1)) - 1);
-                    cprintf("movem.l (a0)+,d0-d%i        ;%i\n", (num_freqs - 1) >> 1, 12+8*((num_freqs - 1) >> 1));
+                    cprintf("movem.l (a0)+,d0-d%i                 ;%i\n", (num_freqs - 1) >> 1, 12+8*((num_freqs - 1) >> 1));
                 }
             }
 
@@ -1699,13 +1701,13 @@ void halve_it()
                 {
                     // Get register to swap from move.w Dx,<ea>
                     *write_code++ = WRITE_WORD(SWAP | (out_potential->base_instruction & 7));
-                    cprintf("swap    D%i                  ;4\n", out_potential->base_instruction & 7);
+                    cprintf("swap    D%i                          ;4\n", out_potential->base_instruction & 7);
                 }
                 else
                 {
                     // Get register to swap from and.w/or.w Dx,<ea>
                     *write_code++ = WRITE_WORD(SWAP | ((out_potential->base_instruction >> 9) & 7));
-                    cprintf("swap    D%i                  ;4\n", ((out_potential->base_instruction >> 9) & 7));
+                    cprintf("swap    D%i                          ;4\n", ((out_potential->base_instruction >> 9) & 7));
                 }
             }
 
@@ -1856,7 +1858,7 @@ void halve_it()
                     break;
                 case ANDI_W:
                 case ORI_W:
-                    cprintf("        ;20\n");
+                    cprintf("            ;20\n");
                     break;
                 case MOVEI_L:
                 case ANDI_L:
@@ -1878,7 +1880,7 @@ void halve_it()
                     break;
                 case ANDI_W:
                 case ORI_W:
-                    cprintf("       ;16\n");
+                    cprintf("           ;16\n");
                     break;
                 case MOVEI_L:
                     cprintf("       ;28\n");
@@ -1902,7 +1904,7 @@ void halve_it()
                     break;
                 case ANDI_W:
                 case ORI_W:
-                    cprintf("        ;16\n");
+                    cprintf("            ;16\n");
                     break;
                 case MOVEI_L:
                     cprintf("        ;20\n");
@@ -1950,7 +1952,7 @@ void halve_it()
                 {
                 case EA_D_A1:
                 case EA_MOVE_D_A1:
-                    cprintf("            ;16\n");
+                    cprintf("                ;16\n");
                     break;
 
                 case EA_A1_POST:
@@ -2241,7 +2243,7 @@ int main(int argc, char ** argv)
     if (1)
     {
         // PI1
-        FILE *sprite = fopen("sprites\\testsprite0.pi1", "r");
+        FILE *sprite = fopen("letters.pi1", "r");
         assert(sprite);
         fseek(sprite, 34, 0);
         fread(buf_origsprite, BUFFER_SIZE, 1, sprite);
